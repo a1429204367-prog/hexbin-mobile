@@ -143,6 +143,29 @@ function exportButtons(tool: ToolId): string {
   return formats.map((format) => `<button class="export" data-format="${format}">导出 ${format.toUpperCase()}</button>`).join("");
 }
 
+async function saveExport(file: File): Promise<void> {
+  const shareData = { files: [file], title: file.name };
+  if (navigator.share && navigator.canShare?.(shareData)) {
+    try {
+      await navigator.share(shareData);
+      window.setTimeout(() => showToast(`已生成 ${file.name}，可保存到文件管理或分享给其他应用。`), 50);
+      return;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+    }
+  }
+
+  const url = URL.createObjectURL(file);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = file.name;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  window.setTimeout(() => showToast(`已下载 ${file.name}，请到浏览器下载记录或文件管理的“下载”中查找。`), 50);
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]!);
 }
@@ -246,12 +269,7 @@ function bindWorkspaceEvents(): void {
       const output = await core.export(state.metadata.sessionId, button.dataset.format!);
       const binary = atob(output.payload);
       const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-      const url = URL.createObjectURL(new Blob([bytes], { type: output.mime }));
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = output.name;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      await saveExport(new File([bytes], output.name, { type: output.mime }));
       showToast(`已生成 ${output.name}。`);
     } catch (error) { showToast(error instanceof Error ? error.message : String(error), true); }
     finally { button.disabled = false; }
