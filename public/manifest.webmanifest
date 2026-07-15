@@ -1,0 +1,12 @@
+{
+  "name": "固件文件工具箱",
+  "short_name": "固件工具箱",
+  "description": "HEX、BIN、S19、MOT 文件本地编辑与校验",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f7fb",
+  "theme_color": "#10243e",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

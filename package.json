@@ -1,0 +1,20 @@
+{
+  "name": "hexbin-mobile-pwa",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "prepare:pyodide": "node scripts/copy-pyodide.mjs",
+    "dev": "npm run prepare:pyodide && vite --host 0.0.0.0",
+    "build": "npm run prepare:pyodide && tsc && vite build",
+    "test:core": "python tests/test_bridge.py",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "pyodide": "^0.29.4"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3",
+    "vite": "6.4.3"
+  }
+}
