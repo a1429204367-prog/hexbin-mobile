@@ -273,5 +273,7 @@ window.addEventListener("beforeinstallprompt", (event) => {
   button.onclick = () => (installPrompt as Event & { prompt: () => void }).prompt();
 });
 
-if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register(new URL("./sw.js", document.baseURI)));
+}
 render();

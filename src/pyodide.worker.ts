@@ -24,7 +24,9 @@ async function getRuntime(): Promise<PyodideRuntime> {
   if (!runtime) {
     runtime = (async () => {
       phase = "加载运行器脚本";
-      const loaderUrl = new URL("/runtime/pyodide.mjs", self.location.origin).href;
+      const appRoot = new URL("../", self.location.href);
+      const runtimeRoot = new URL("runtime/", appRoot);
+      const loaderUrl = new URL("pyodide.mjs", runtimeRoot).href;
       const { loadPyodide } = await import(/* @vite-ignore */ loaderUrl) as {
         loadPyodide: (options: { indexURL: string; stdLibURL: string; lockFileURL: string; stdout: (value: string) => void; stderr: (value: string) => void }) => Promise<PyodideRuntime>;
       };
@@ -34,16 +36,16 @@ async function getRuntime(): Promise<PyodideRuntime> {
         if (runtimeLogs.length > 12) runtimeLogs.shift();
       };
       const pyodide = await loadPyodide({
-        indexURL: new URL("/runtime/", self.location.origin).href,
-        stdLibURL: new URL("/runtime/python_stdlib.data", self.location.origin).href,
-        lockFileURL: new URL("/runtime/pyodide-lock.json", self.location.origin).href,
+        indexURL: runtimeRoot.href,
+        stdLibURL: new URL("python_stdlib.data", runtimeRoot).href,
+        lockFileURL: new URL("pyodide-lock.json", runtimeRoot).href,
         stdout: remember,
         stderr: remember,
       });
       const files = ["hexbin_core.py", "line_checksum_core.py", "bridge.py"];
       for (const file of files) {
         phase = `读取核心文件 ${file}`;
-        const response = await fetch(`/python/${file}`);
+        const response = await fetch(new URL(`python/${file}`, appRoot));
         if (!response.ok) throw new Error(`核心文件加载失败：${file}`);
         pyodide.FS.writeFile(`/home/pyodide/${file}`, await response.text());
       }
