@@ -1,5 +1,7 @@
 node_modules/
 dist/
 preview.log
+preview-error.log
+__pycache__/
 public/runtime/
 public/pyodide/

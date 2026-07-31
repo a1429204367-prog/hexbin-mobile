@@ -2,6 +2,11 @@ import "./style.css";
 import { core, type FileMetadata, type PageData, type ToolId } from "./api";
 
 const PAGE_SIZE = 16 * 64;
+const BYTES_PER_ROW = 16;
+const COLUMN_LABELS = Array.from(
+  { length: BYTES_PER_ROW },
+  (_, index) => index.toString(16).toUpperCase().padStart(2, "0"),
+);
 
 type ToolState = {
   metadata: FileMetadata | null;
@@ -98,9 +103,9 @@ function renderEditor(state: ToolState, meta: FileMetadata): string {
   const firstPage = page.start === 0;
   const lastPage = page.end >= page.total;
   const rows: string[] = [];
-  for (let rowStart = 0; rowStart < page.bytes.length; rowStart += 16) {
+  for (let rowStart = 0; rowStart < page.bytes.length; rowStart += BYTES_PER_ROW) {
     const offset = page.start + rowStart;
-    const values = page.bytes.slice(rowStart, rowStart + 16);
+    const values = page.bytes.slice(rowStart, rowStart + BYTES_PER_ROW);
     rows.push(`<div class="hex-row"><button class="address" data-jump-offset="${offset}">${formatHex(meta.baseAddress + offset)}</button><div class="byte-row">${values.map((value, index) => {
       const absoluteOffset = offset + index;
       return `<button class="byte ${selected === absoluteOffset ? "selected" : ""}" data-offset="${absoluteOffset}">${value.toString(16).toUpperCase().padStart(2, "0")}</button>`;
@@ -125,12 +130,16 @@ function renderEditor(state: ToolState, meta: FileMetadata): string {
           <form id="searchForm"><input id="searchInput" inputmode="text" placeholder="搜索，如 AA 55 01" /><button>搜索</button></form>
         </div>
         <div class="pager"><button id="previousPage" ${firstPage ? "disabled" : ""}>上一页</button><span>${formatHex(meta.baseAddress + page.start)} — ${formatHex(meta.baseAddress + Math.max(page.start, page.end - 1))}</span><button id="nextPage" ${lastPage ? "disabled" : ""}>下一页</button></div>
-        <div class="hex-table" aria-label="十六进制编辑器"><div class="hex-header"><span>地址</span><span>00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F</span><span>ASCII</span></div>${rows.join("")}</div>
+        <div class="hex-table" aria-label="十六进制编辑器"><div class="hex-header"><span>地址</span><div class="byte-columns">${COLUMN_LABELS.map((label) => `<span>${label}</span>`).join("")}</div><span>ASCII</span></div>${rows.join("")}</div>
         <div class="edit-bar ${selected === null ? "disabled" : ""}">
           <div><span>当前字节</span><strong>${selected === null ? "未选择" : `${formatHex(meta.baseAddress + selected)} · 偏移 ${formatHex(selected)}`}</strong></div>
-          <label>十六进制<input id="hexEdit" maxlength="2" inputmode="text" value="${selectedValue === null ? "" : selectedValue.toString(16).toUpperCase().padStart(2, "0")}" ${selected === null ? "disabled" : ""} /></label>
+          <label>十六进制<input id="hexEdit" maxlength="2" inputmode="text" enterkeyhint="next" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${selectedValue === null ? "" : selectedValue.toString(16).toUpperCase().padStart(2, "0")}" ${selected === null ? "disabled" : ""} /></label>
           <label>字符<input id="asciiEdit" maxlength="1" value="${selectedValue !== null && selectedValue >= 32 && selectedValue <= 126 ? escapeHtml(String.fromCharCode(selectedValue)) : ""}" ${selected === null ? "disabled" : ""} /></label>
-          <button id="applyEdit" class="primary" ${selected === null ? "disabled" : ""}>应用修改</button>
+          <div class="edit-actions">
+            <button id="previousByte" class="byte-nav" type="button" title="上一字节" aria-label="上一字节" ${selected === null || selected <= 0 ? "disabled" : ""}>←</button>
+            <button id="applyEdit" class="primary" type="button" ${selected === null ? "disabled" : ""}>应用修改</button>
+            <button id="nextByte" class="byte-nav" type="button" title="下一字节" aria-label="下一字节" ${selected === null || selected >= meta.size - 1 ? "disabled" : ""}>→</button>
+          </div>
         </div>
         <div class="export-bar"><span>导出后会自动应用镜像和校验规则</span><div>${exportButtons(activeTool)}</div></div>
       </section>
@@ -178,6 +187,28 @@ async function loadPage(tool: ToolId, start: number): Promise<void> {
   render();
 }
 
+function focusHexEditor(): void {
+  window.requestAnimationFrame(() => {
+    const input = document.querySelector<HTMLInputElement>("#hexEdit");
+    if (!input || input.disabled) return;
+    input.focus();
+    input.select();
+  });
+}
+
+async function selectByte(tool: ToolId, offset: number): Promise<void> {
+  const state = states[tool];
+  if (!state.metadata || offset < 0 || offset >= state.metadata.size) return;
+  state.selectedOffset = offset;
+  const targetPageStart = Math.floor(offset / PAGE_SIZE) * PAGE_SIZE;
+  if (!state.page || targetPageStart !== state.pageStart) {
+    state.pageStart = targetPageStart;
+    state.page = await core.readPage(state.metadata.sessionId, targetPageStart, PAGE_SIZE);
+  }
+  render();
+  focusHexEditor();
+}
+
 function parseAddress(raw: string, meta: FileMetadata): number {
   const normalized = raw.trim().replace(/[_\s]/g, "").replace(/^0x/i, "");
   if (!/^[0-9a-f]+$/i.test(normalized)) throw new Error("请输入有效的十六进制地址。 ");
@@ -212,9 +243,7 @@ function bindWorkspaceEvents(): void {
   });
 
   document.querySelectorAll<HTMLButtonElement>(".byte").forEach((button) => button.addEventListener("click", () => {
-    state.selectedOffset = Number(button.dataset.offset);
-    render();
-    document.querySelector<HTMLInputElement>("#hexEdit")?.focus();
+    void selectByte(activeTool, Number(button.dataset.offset));
   }));
 
   document.querySelector("#previousPage")?.addEventListener("click", () => void loadPage(activeTool, state.pageStart - PAGE_SIZE));
@@ -244,17 +273,50 @@ function bindWorkspaceEvents(): void {
     } catch (error) { showToast(error instanceof Error ? error.message : String(error), true); }
   });
 
-  document.querySelector("#applyEdit")?.addEventListener("click", async () => {
+  let applyingEdit = false;
+  const applySelectedEdit = async (): Promise<void> => {
     if (!state.metadata || state.selectedOffset === null) return;
     const input = document.querySelector<HTMLInputElement>("#hexEdit")!;
     if (!/^[0-9a-f]{2}$/i.test(input.value)) return showToast("十六进制值必须是两位，例如 0A。", true);
+    if (applyingEdit) return;
+    applyingEdit = true;
+    const editedOffset = state.selectedOffset;
     try {
-      const result = await core.editByte(state.metadata.sessionId, state.selectedOffset, Number.parseInt(input.value, 16));
+      const result = await core.editByte(state.metadata.sessionId, editedOffset, Number.parseInt(input.value, 16));
       state.metadata = { ...result.metadata, sessionId: state.metadata.sessionId };
+      const nextOffset = Math.min(editedOffset + 1, state.metadata.size - 1);
+      state.selectedOffset = nextOffset;
+      state.pageStart = Math.floor(nextOffset / PAGE_SIZE) * PAGE_SIZE;
       state.page = await core.readPage(state.metadata.sessionId, state.pageStart, PAGE_SIZE);
       render();
-      showToast("修改成功，相关校验已自动更新。 ");
+      focusHexEditor();
+      showToast(nextOffset === editedOffset ? "修改成功，已到文件末尾。" : "修改成功，已移到下一字节。");
     } catch (error) { showToast(error instanceof Error ? error.message : String(error), true); }
+    finally { applyingEdit = false; }
+  };
+
+  document.querySelector("#applyEdit")?.addEventListener("click", () => void applySelectedEdit());
+  document.querySelector("#previousByte")?.addEventListener("click", () => {
+    if (state.selectedOffset !== null) void selectByte(activeTool, state.selectedOffset - 1);
+  });
+  document.querySelector("#nextByte")?.addEventListener("click", () => {
+    if (state.selectedOffset !== null) void selectByte(activeTool, state.selectedOffset + 1);
+  });
+
+  const hexInput = document.querySelector<HTMLInputElement>("#hexEdit");
+  hexInput?.addEventListener("focus", () => window.requestAnimationFrame(() => hexInput.select()));
+  hexInput?.addEventListener("pointerup", (event) => {
+    event.preventDefault();
+    hexInput.select();
+  });
+  hexInput?.addEventListener("input", () => {
+    const normalized = hexInput.value.replace(/[^0-9a-f]/gi, "").toUpperCase();
+    if (hexInput.value !== normalized) hexInput.value = normalized;
+  });
+  hexInput?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void applySelectedEdit();
   });
 
   document.querySelector<HTMLInputElement>("#asciiEdit")?.addEventListener("input", (event) => {
