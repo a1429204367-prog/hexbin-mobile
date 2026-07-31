@@ -154,7 +154,10 @@ function renderHexRows(start: number, bytes: number[], meta: FileMetadata, selec
 
 function rangeStatusText(page: PageData, meta: FileMetadata): string {
   const range = `${formatHex(meta.baseAddress + page.start)} — ${formatHex(meta.baseAddress + Math.max(page.start, page.end - 1))}`;
-  return page.end >= page.total ? `${range} · 已到文件末尾` : `${range} · 下滑自动加载`;
+  if (page.start === 0 && page.end >= page.total) return `${range} · 已加载完整文件`;
+  if (page.start === 0) return `${range} · 下滑自动加载`;
+  if (page.end >= page.total) return `${range} · 上滑自动加载`;
+  return `${range} · 上下滑自动加载`;
 }
 
 function exportButtons(tool: ToolId): string {
@@ -268,25 +271,44 @@ function bindContinuousScroll(state: ToolState): void {
 
   table.addEventListener("scroll", async () => {
     if (loading || !state.metadata || !state.page) return;
+    const nearTop = table.scrollTop <= SCROLL_LOAD_THRESHOLD;
     const nearBottom = table.scrollHeight - table.scrollTop - table.clientHeight <= SCROLL_LOAD_THRESHOLD;
-    if (!nearBottom || state.page.end >= state.page.total) return;
+    const canLoadPrevious = nearTop && state.page.start > 0;
+    const canLoadNext = nearBottom && state.page.end < state.page.total;
+    if (!canLoadPrevious && !canLoadNext) return;
 
     loading = true;
     try {
-      const next = await core.readPage(state.metadata.sessionId, state.page.end, PAGE_SIZE);
-      const combinedBytes = [...state.page.bytes, ...next.bytes];
-      const excessBytes = Math.max(0, combinedBytes.length - MAX_RENDER_BYTES);
-      const removedRows = Math.floor(excessBytes / BYTES_PER_ROW);
-      const removedBytes = removedRows * BYTES_PER_ROW;
       const rowHeight = table.querySelector<HTMLElement>(".hex-row")?.getBoundingClientRect().height ?? 0;
-      const start = state.page.start + removedBytes;
-      const bytes = combinedBytes.slice(removedBytes);
-      state.pageStart = start;
-      state.page = { start, end: next.end, total: next.total, bytes };
+      const oldScrollTop = table.scrollTop;
 
-      table.querySelectorAll(".hex-row").forEach((row) => row.remove());
-      table.insertAdjacentHTML("beforeend", renderHexRows(start, bytes, state.metadata!, state.selectedOffset));
-      if (removedRows > 0) table.scrollTop = Math.max(0, table.scrollTop - removedRows * rowHeight);
+      if (canLoadPrevious) {
+        const previousStart = Math.max(0, state.page.start - PAGE_SIZE);
+        const previous = await core.readPage(state.metadata.sessionId, previousStart, state.page.start - previousStart);
+        const combinedBytes = [...previous.bytes, ...state.page.bytes];
+        const bytes = combinedBytes.slice(0, MAX_RENDER_BYTES);
+        const prependedRows = Math.ceil(previous.bytes.length / BYTES_PER_ROW);
+        state.pageStart = previousStart;
+        state.page = { start: previousStart, end: previousStart + bytes.length, total: previous.total, bytes };
+
+        table.querySelectorAll(".hex-row").forEach((row) => row.remove());
+        table.insertAdjacentHTML("beforeend", renderHexRows(previousStart, bytes, state.metadata, state.selectedOffset));
+        table.scrollTop = oldScrollTop + prependedRows * rowHeight;
+      } else {
+        const next = await core.readPage(state.metadata.sessionId, state.page.end, PAGE_SIZE);
+        const combinedBytes = [...state.page.bytes, ...next.bytes];
+        const excessBytes = Math.max(0, combinedBytes.length - MAX_RENDER_BYTES);
+        const removedRows = Math.floor(excessBytes / BYTES_PER_ROW);
+        const removedBytes = removedRows * BYTES_PER_ROW;
+        const start = state.page.start + removedBytes;
+        const bytes = combinedBytes.slice(removedBytes);
+        state.pageStart = start;
+        state.page = { start, end: next.end, total: next.total, bytes };
+
+        table.querySelectorAll(".hex-row").forEach((row) => row.remove());
+        table.insertAdjacentHTML("beforeend", renderHexRows(start, bytes, state.metadata, state.selectedOffset));
+        if (removedRows > 0) table.scrollTop = Math.max(0, oldScrollTop - removedRows * rowHeight);
+      }
       const status = document.querySelector<HTMLElement>("#rangeStatus");
       if (status) status.textContent = rangeStatusText(state.page, state.metadata);
       bindByteButtons(state);
