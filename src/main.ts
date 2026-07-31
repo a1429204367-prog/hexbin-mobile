@@ -3,6 +3,8 @@ import { core, type FileMetadata, type PageData, type ToolId } from "./api";
 
 const PAGE_SIZE = 16 * 64;
 const BYTES_PER_ROW = 16;
+const MAX_RENDER_BYTES = PAGE_SIZE * 4;
+const SCROLL_LOAD_THRESHOLD = 120;
 const COLUMN_LABELS = Array.from(
   { length: BYTES_PER_ROW },
   (_, index) => index.toString(16).toUpperCase().padStart(2, "0"),
@@ -90,7 +92,7 @@ function renderEmptyGuide(): string {
   return `
     <section class="empty-guide">
       <div><span>1</span><h3>选择文件</h3><p>浏览器直接读取手机或电脑中的文件。</p></div>
-      <div><span>2</span><h3>查看与编辑</h3><p>按地址分页，点选字节进行修改。</p></div>
+      <div><span>2</span><h3>查看与编辑</h3><p>连续下滑浏览，点选字节进行修改。</p></div>
       <div><span>3</span><h3>校验并导出</h3><p>自动重算校验，下载新的文件。</p></div>
     </section>
   `;
@@ -100,17 +102,7 @@ function renderEditor(state: ToolState, meta: FileMetadata): string {
   const page = state.page!;
   const selected = state.selectedOffset;
   const selectedValue = selected === null || selected < page.start || selected >= page.end ? null : page.bytes[selected - page.start];
-  const firstPage = page.start === 0;
-  const lastPage = page.end >= page.total;
-  const rows: string[] = [];
-  for (let rowStart = 0; rowStart < page.bytes.length; rowStart += BYTES_PER_ROW) {
-    const offset = page.start + rowStart;
-    const values = page.bytes.slice(rowStart, rowStart + BYTES_PER_ROW);
-    rows.push(`<div class="hex-row"><button class="address" data-jump-offset="${offset}">${formatHex(meta.baseAddress + offset)}</button><div class="byte-row">${values.map((value, index) => {
-      const absoluteOffset = offset + index;
-      return `<button class="byte ${selected === absoluteOffset ? "selected" : ""}" data-offset="${absoluteOffset}">${value.toString(16).toUpperCase().padStart(2, "0")}</button>`;
-    }).join("")}</div><div class="ascii">${values.map((value) => value >= 32 && value <= 126 ? escapeHtml(String.fromCharCode(value)) : ".").join("")}</div></div>`);
-  }
+  const rows = renderHexRows(page.start, page.bytes, meta, selected);
 
   return `
     <div class="workspace-grid">
@@ -129,8 +121,8 @@ function renderEditor(state: ToolState, meta: FileMetadata): string {
           <form id="jumpForm"><input id="jumpInput" inputmode="text" placeholder="跳转地址，如 2047F0" /><button>跳转</button></form>
           <form id="searchForm"><input id="searchInput" inputmode="text" placeholder="搜索，如 AA 55 01" /><button>搜索</button></form>
         </div>
-        <div class="pager"><button id="previousPage" ${firstPage ? "disabled" : ""}>上一页</button><span>${formatHex(meta.baseAddress + page.start)} — ${formatHex(meta.baseAddress + Math.max(page.start, page.end - 1))}</span><button id="nextPage" ${lastPage ? "disabled" : ""}>下一页</button></div>
-        <div class="hex-table" aria-label="十六进制编辑器"><div class="hex-header"><span>地址</span><div class="byte-columns">${COLUMN_LABELS.map((label) => `<span>${label}</span>`).join("")}</div><span>ASCII</span></div>${rows.join("")}</div>
+        <div class="pager"><span id="rangeStatus">${rangeStatusText(page, meta)}</span></div>
+        <div class="hex-table" aria-label="十六进制编辑器"><div class="hex-header"><span>地址</span><div class="byte-columns">${COLUMN_LABELS.map((label) => `<span>${label}</span>`).join("")}</div><span>ASCII</span></div>${rows}</div>
         <div class="edit-bar ${selected === null ? "disabled" : ""}">
           <div><span>当前字节</span><strong>${selected === null ? "未选择" : `${formatHex(meta.baseAddress + selected)} · 偏移 ${formatHex(selected)}`}</strong></div>
           <label>十六进制<input id="hexEdit" maxlength="2" inputmode="text" enterkeyhint="next" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${selectedValue === null ? "" : selectedValue.toString(16).toUpperCase().padStart(2, "0")}" ${selected === null ? "disabled" : ""} /></label>
@@ -145,6 +137,24 @@ function renderEditor(state: ToolState, meta: FileMetadata): string {
       </section>
     </div>
   `;
+}
+
+function renderHexRows(start: number, bytes: number[], meta: FileMetadata, selected: number | null): string {
+  const rows: string[] = [];
+  for (let rowStart = 0; rowStart < bytes.length; rowStart += BYTES_PER_ROW) {
+    const offset = start + rowStart;
+    const values = bytes.slice(rowStart, rowStart + BYTES_PER_ROW);
+    rows.push(`<div class="hex-row"><button class="address" data-jump-offset="${offset}">${formatHex(meta.baseAddress + offset)}</button><div class="byte-row">${values.map((value, index) => {
+      const absoluteOffset = offset + index;
+      return `<button class="byte ${selected === absoluteOffset ? "selected" : ""}" data-offset="${absoluteOffset}">${value.toString(16).toUpperCase().padStart(2, "0")}</button>`;
+    }).join("")}</div><div class="ascii">${values.map((value) => value >= 32 && value <= 126 ? escapeHtml(String.fromCharCode(value)) : ".").join("")}</div></div>`);
+  }
+  return rows.join("");
+}
+
+function rangeStatusText(page: PageData, meta: FileMetadata): string {
+  const range = `${formatHex(meta.baseAddress + page.start)} — ${formatHex(meta.baseAddress + Math.max(page.start, page.end - 1))}`;
+  return page.end >= page.total ? `${range} · 已到文件末尾` : `${range} · 下滑自动加载`;
 }
 
 function exportButtons(tool: ToolId): string {
@@ -200,12 +210,38 @@ async function selectByte(tool: ToolId, offset: number): Promise<void> {
   const state = states[tool];
   if (!state.metadata || offset < 0 || offset >= state.metadata.size) return;
   state.selectedOffset = offset;
-  const targetPageStart = Math.floor(offset / PAGE_SIZE) * PAGE_SIZE;
-  if (!state.page || targetPageStart !== state.pageStart) {
+  if (!state.page || offset < state.page.start || offset >= state.page.end) {
+    const targetPageStart = Math.floor(offset / PAGE_SIZE) * PAGE_SIZE;
     state.pageStart = targetPageStart;
     state.page = await core.readPage(state.metadata.sessionId, targetPageStart, PAGE_SIZE);
+    render();
+    focusHexEditor();
+    return;
   }
-  render();
+
+  document.querySelector(".byte.selected")?.classList.remove("selected");
+  document.querySelector<HTMLButtonElement>(`.byte[data-offset="${offset}"]`)?.classList.add("selected");
+  const selectedValue = state.page.bytes[offset - state.page.start];
+  const editBar = document.querySelector<HTMLElement>(".edit-bar");
+  editBar?.classList.remove("disabled");
+  const currentByte = editBar?.querySelector<HTMLElement>("strong");
+  if (currentByte) currentByte.textContent = `${formatHex(state.metadata.baseAddress + offset)} · 偏移 ${formatHex(offset)}`;
+  const hexInput = document.querySelector<HTMLInputElement>("#hexEdit");
+  if (hexInput) {
+    hexInput.disabled = false;
+    hexInput.value = selectedValue.toString(16).toUpperCase().padStart(2, "0");
+  }
+  const asciiInput = document.querySelector<HTMLInputElement>("#asciiEdit");
+  if (asciiInput) {
+    asciiInput.disabled = false;
+    asciiInput.value = selectedValue >= 32 && selectedValue <= 126 ? String.fromCharCode(selectedValue) : "";
+  }
+  const previous = document.querySelector<HTMLButtonElement>("#previousByte");
+  if (previous) previous.disabled = offset <= 0;
+  const apply = document.querySelector<HTMLButtonElement>("#applyEdit");
+  if (apply) apply.disabled = false;
+  const next = document.querySelector<HTMLButtonElement>("#nextByte");
+  if (next) next.disabled = offset >= state.metadata.size - 1;
   focusHexEditor();
 }
 
@@ -216,6 +252,50 @@ function parseAddress(raw: string, meta: FileMetadata): number {
   if (value >= meta.baseAddress && value < meta.baseAddress + meta.size) return value - meta.baseAddress;
   if (value >= 0 && value < meta.size) return value;
   throw new Error(`地址范围是 ${formatHex(meta.baseAddress)} 到 ${formatHex(meta.baseAddress + meta.size - 1)}。`);
+}
+
+function bindByteButtons(state: ToolState): void {
+  document.querySelectorAll<HTMLButtonElement>(".byte:not([data-bound])").forEach((button) => {
+    button.dataset.bound = "true";
+    button.addEventListener("click", () => void selectByte(activeTool, Number(button.dataset.offset)));
+  });
+}
+
+function bindContinuousScroll(state: ToolState): void {
+  const table = document.querySelector<HTMLElement>(".hex-table");
+  if (!table || !state.metadata || !state.page) return;
+  let loading = false;
+
+  table.addEventListener("scroll", async () => {
+    if (loading || !state.metadata || !state.page) return;
+    const nearBottom = table.scrollHeight - table.scrollTop - table.clientHeight <= SCROLL_LOAD_THRESHOLD;
+    if (!nearBottom || state.page.end >= state.page.total) return;
+
+    loading = true;
+    try {
+      const next = await core.readPage(state.metadata.sessionId, state.page.end, PAGE_SIZE);
+      const combinedBytes = [...state.page.bytes, ...next.bytes];
+      const excessBytes = Math.max(0, combinedBytes.length - MAX_RENDER_BYTES);
+      const removedRows = Math.floor(excessBytes / BYTES_PER_ROW);
+      const removedBytes = removedRows * BYTES_PER_ROW;
+      const rowHeight = table.querySelector<HTMLElement>(".hex-row")?.getBoundingClientRect().height ?? 0;
+      const start = state.page.start + removedBytes;
+      const bytes = combinedBytes.slice(removedBytes);
+      state.pageStart = start;
+      state.page = { start, end: next.end, total: next.total, bytes };
+
+      table.querySelectorAll(".hex-row").forEach((row) => row.remove());
+      table.insertAdjacentHTML("beforeend", renderHexRows(start, bytes, state.metadata!, state.selectedOffset));
+      if (removedRows > 0) table.scrollTop = Math.max(0, table.scrollTop - removedRows * rowHeight);
+      const status = document.querySelector<HTMLElement>("#rangeStatus");
+      if (status) status.textContent = rangeStatusText(state.page, state.metadata);
+      bindByteButtons(state);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      loading = false;
+    }
+  }, { passive: true });
 }
 
 function bindWorkspaceEvents(): void {
@@ -242,12 +322,8 @@ function bindWorkspaceEvents(): void {
     }
   });
 
-  document.querySelectorAll<HTMLButtonElement>(".byte").forEach((button) => button.addEventListener("click", () => {
-    void selectByte(activeTool, Number(button.dataset.offset));
-  }));
-
-  document.querySelector("#previousPage")?.addEventListener("click", () => void loadPage(activeTool, state.pageStart - PAGE_SIZE));
-  document.querySelector("#nextPage")?.addEventListener("click", () => void loadPage(activeTool, state.pageStart + PAGE_SIZE));
+  bindByteButtons(state);
+  bindContinuousScroll(state);
 
   document.querySelector<HTMLFormElement>("#jumpForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -281,14 +357,28 @@ function bindWorkspaceEvents(): void {
     if (applyingEdit) return;
     applyingEdit = true;
     const editedOffset = state.selectedOffset;
+    const table = document.querySelector<HTMLElement>(".hex-table");
+    const scrollPosition = { top: table?.scrollTop ?? 0, left: table?.scrollLeft ?? 0 };
     try {
       const result = await core.editByte(state.metadata.sessionId, editedOffset, Number.parseInt(input.value, 16));
       state.metadata = { ...result.metadata, sessionId: state.metadata.sessionId };
       const nextOffset = Math.min(editedOffset + 1, state.metadata.size - 1);
       state.selectedOffset = nextOffset;
-      state.pageStart = Math.floor(nextOffset / PAGE_SIZE) * PAGE_SIZE;
-      state.page = await core.readPage(state.metadata.sessionId, state.pageStart, PAGE_SIZE);
+      const visiblePage = state.page;
+      if (visiblePage && nextOffset >= visiblePage.start && nextOffset < visiblePage.end) {
+        state.pageStart = visiblePage.start;
+        state.page = await core.readPage(state.metadata.sessionId, visiblePage.start, visiblePage.bytes.length);
+      } else {
+        state.pageStart = Math.floor(nextOffset / PAGE_SIZE) * PAGE_SIZE;
+        state.page = await core.readPage(state.metadata.sessionId, state.pageStart, PAGE_SIZE);
+      }
       render();
+      window.requestAnimationFrame(() => {
+        const updatedTable = document.querySelector<HTMLElement>(".hex-table");
+        if (!updatedTable || !visiblePage) return;
+        updatedTable.scrollTop = scrollPosition.top;
+        updatedTable.scrollLeft = scrollPosition.left;
+      });
       focusHexEditor();
       showToast(nextOffset === editedOffset ? "修改成功，已到文件末尾。" : "修改成功，已移到下一字节。");
     } catch (error) { showToast(error instanceof Error ? error.message : String(error), true); }
