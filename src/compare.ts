@@ -9,6 +9,10 @@ import {
 const BYTES_PER_ROW = 16;
 const COMPARE_PAGE_ROWS = 192;
 const COMPARE_FILE_ACCEPT = ".hex,.HEX,.hex_tmp,.s19,.S19,.s28,.S28,.s37,.S37,.mot,.MOT,.srec,.SREC,.bin,.BIN";
+const BYTE_COLUMN_LABELS = Array.from(
+  { length: BYTES_PER_ROW },
+  (_, index) => index.toString(16).toUpperCase(),
+);
 
 type CompareSide = "left" | "right";
 type CompareRenderState = {
@@ -135,6 +139,10 @@ function renderSideActions(meta: CompareMetadata, side: CompareSide): string {
   `;
 }
 
+function renderByteHeader(): string {
+  return `<div class="compare-byte-header" aria-hidden="true">${BYTE_COLUMN_LABELS.map((label) => `<span>${label}</span>`).join("")}</div>`;
+}
+
 function asciiValue(value: number | null): string {
   if (value === null) return "·";
   return value >= 32 && value <= 126 ? escapeHtml(String.fromCharCode(value)) : ".";
@@ -153,7 +161,7 @@ function renderCompareRows(page: ComparePage): string {
           const missing = value === null ? " missing" : "";
           return `<button class="compare-byte diff-${type ?? "same"}${missing}${selected}${selectedSide}" data-compare-side="${side}" data-compare-address="${address}" type="button" ${value === null ? "disabled" : ""}>${value === null ? "--" : value.toString(16).toUpperCase().padStart(2, "0")}</button>`;
         }).join("")}</div>
-        <div class="compare-ascii">${values.map(asciiValue).join("")}</div>
+        <div class="compare-ascii-row"><span class="compare-ascii-label">ASCII</span><div class="compare-ascii">${values.map((value) => `<span>${asciiValue(value)}</span>`).join("")}</div></div>
       </div>
     `;
     return `
@@ -214,7 +222,7 @@ function renderCompareSession(): string {
         <button id="compareNextPage" type="button" ${!page || page.index + page.rows.length >= page.total ? "disabled" : ""}>下一段</button>
       </div>
       <div class="compare-table" aria-label="V55 双文件十六进制对比">
-        <div class="compare-table-header"><span>地址</span><strong>文件 A</strong><strong>文件 B</strong></div>
+        <div class="compare-table-header"><span>地址</span><div class="compare-column-heading"><strong>文件 A</strong>${renderByteHeader()}</div><div class="compare-column-heading"><strong>文件 B</strong>${renderByteHeader()}</div></div>
         ${page ? renderCompareRows(page) : ""}
       </div>
       ${renderEditBar()}
