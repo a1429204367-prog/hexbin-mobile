@@ -121,24 +121,6 @@ function renderMetadata(meta: CompareMetadata, side: CompareSide): string {
   `;
 }
 
-function renderSideActions(meta: CompareMetadata, side: CompareSide): string {
-  const label = sideLabel(side);
-  return `
-    <section class="compare-side-card">
-      ${renderMetadata(meta, side)}
-      <div class="compare-side-actions">
-        <button class="compare-command" type="button" data-recalculate-side="${side}">重算校验</button>
-        <button class="compare-command" type="button" data-export-side="${side}" data-export-format="hex">导出 HEX</button>
-        <button class="compare-command" type="button" data-export-side="${side}" data-export-format="bin">导出 BIN</button>
-        <form class="compare-jump" data-jump-side="${side}">
-          <input inputmode="text" placeholder="地址或偏移" aria-label="文件${label}跳转地址" />
-          <button type="submit">跳转</button>
-        </form>
-      </div>
-    </section>
-  `;
-}
-
 function renderByteHeader(): string {
   return `<div class="compare-byte-header" aria-hidden="true">${BYTE_COLUMN_LABELS.map((label) => `<span>${label}</span>`).join("")}</div>`;
 }
@@ -148,30 +130,48 @@ function asciiValue(value: number | null): string {
   return value >= 32 && value <= 126 ? escapeHtml(String.fromCharCode(value)) : ".";
 }
 
-function renderCompareRows(page: ComparePage): string {
+function renderCompareRows(page: ComparePage, side: CompareSide): string {
   return page.rows.map((row) => {
-    const renderSide = (side: CompareSide, values: (number | null)[]) => `
-      <div class="compare-side-values compare-side-${side}">
-        <strong class="compare-side-label">文件 ${sideLabel(side)}</strong>
-        <div class="compare-byte-grid">${values.map((value, index) => {
-          const address = row.address + index;
-          const type = row.diffTypes[index];
-          const selected = state.selectedAddress === address ? " selected" : "";
-          const selectedSide = state.selectedAddress === address && state.selectedSide === side ? " selected-side" : "";
-          const missing = value === null ? " missing" : "";
-          return `<button class="compare-byte diff-${type ?? "same"}${missing}${selected}${selectedSide}" data-compare-side="${side}" data-compare-address="${address}" type="button" ${value === null ? "disabled" : ""}>${value === null ? "--" : value.toString(16).toUpperCase().padStart(2, "0")}</button>`;
-        }).join("")}</div>
-        <div class="compare-ascii-row"><span class="compare-ascii-label">ASCII</span><div class="compare-ascii">${values.map((value) => `<span>${asciiValue(value)}</span>`).join("")}</div></div>
-      </div>
-    `;
+    const values = row[side];
     return `
-      <div class="compare-row" data-compare-row="${row.address}">
-        <button class="compare-address" type="button" data-compare-jump-address="${row.address}">${formatHex(row.address)}</button>
-        ${renderSide("left", row.left)}
-        ${renderSide("right", row.right)}
+      <div class="compare-side-row" data-compare-side-row="${side}-${row.address}">
+        <button class="compare-address" type="button" data-compare-jump-address="${row.address}" data-compare-jump-side="${side}">${formatHex(row.address)}</button>
+        <div class="compare-byte-grid">${values.map((value, index) => {
+            const address = row.address + index;
+            const type = row.diffTypes[index];
+            const selected = state.selectedAddress === address ? " selected" : "";
+            const selectedSide = state.selectedAddress === address && state.selectedSide === side ? " selected-side" : "";
+            const missing = value === null ? " missing" : "";
+            return `<button class="compare-byte diff-${type ?? "same"}${missing}${selected}${selectedSide}" data-compare-side="${side}" data-compare-address="${address}" type="button" ${value === null ? "disabled" : ""}>${value === null ? "--" : value.toString(16).toUpperCase().padStart(2, "0")}</button>`;
+          }).join("")}</div>
+        <div class="compare-ascii">${values.map((value) => `<span>${asciiValue(value)}</span>`).join("")}</div>
       </div>
     `;
   }).join("");
+}
+
+function renderCompareEditor(meta: CompareMetadata, side: CompareSide, page: ComparePage | null): string {
+  const label = sideLabel(side);
+  return `
+    <section class="compare-editor compare-editor-${side}">
+      <div class="compare-side-card">
+        ${renderMetadata(meta, side)}
+        <div class="compare-side-actions">
+          <button class="compare-command" type="button" data-recalculate-side="${side}">重算校验</button>
+          <button class="compare-command" type="button" data-export-side="${side}" data-export-format="hex">导出 HEX</button>
+          <button class="compare-command" type="button" data-export-side="${side}" data-export-format="bin">导出 BIN</button>
+          <form class="compare-jump" data-jump-side="${side}">
+            <input inputmode="text" placeholder="地址或偏移" aria-label="文件${label}跳转地址" />
+            <button type="submit">跳转</button>
+          </form>
+        </div>
+      </div>
+      <div class="compare-editor-table" aria-label="文件${label}十六进制数据">
+        <div class="compare-table-header"><span>Offset（偏移）:</span>${renderByteHeader()}<span class="compare-ascii-heading">ASCII（字符）</span></div>
+        ${page ? renderCompareRows(page, side) : ""}
+      </div>
+    </section>
+  `;
 }
 
 function renderEditBar(): string {
@@ -209,10 +209,6 @@ function renderCompareSession(): string {
         <div><p class="section-label">V55 参数对比</p><h2>${differenceCount.toLocaleString()} 处差异</h2><p>按绝对地址同步显示文件 A 和文件 B，文件不会上传。</p></div>
         <div class="compare-counts"><span>参数差异<strong>${snapshot.parameterDifferenceCount.toLocaleString()}</strong></span><span>校验差异<strong>${snapshot.checksumDifferenceCount.toLocaleString()}</strong></span><span>单侧缺失<strong>${(snapshot.leftOnlyCount + snapshot.rightOnlyCount).toLocaleString()}</strong></span></div>
       </div>
-      <div class="compare-actions-grid">
-        ${renderSideActions(session.left, "left")}
-        ${renderSideActions(session.right, "right")}
-      </div>
       <div class="compare-navigation">
         <button id="comparePrevious" type="button" ${differenceCount ? "" : "disabled"}>上一处</button>
         <strong>${current} / ${differenceCount}</strong>
@@ -221,9 +217,9 @@ function renderCompareSession(): string {
         <button id="comparePreviousPage" type="button" ${!page || page.index <= 0 ? "disabled" : ""}>上一段</button>
         <button id="compareNextPage" type="button" ${!page || page.index + page.rows.length >= page.total ? "disabled" : ""}>下一段</button>
       </div>
-      <div class="compare-table" aria-label="V55 双文件十六进制对比">
-        <div class="compare-table-header"><span>地址</span><div class="compare-column-heading"><strong>文件 A</strong>${renderByteHeader()}</div><div class="compare-column-heading"><strong>文件 B</strong>${renderByteHeader()}</div></div>
-        ${page ? renderCompareRows(page) : ""}
+      <div class="compare-editors" aria-label="V55 双文件十六进制对比">
+        ${renderCompareEditor(session.left, "left", page)}
+        ${renderCompareEditor(session.right, "right", page)}
       </div>
       ${renderEditBar()}
     </section>
@@ -268,7 +264,7 @@ async function loadAddress(workspace: HTMLElement, address: number, side: Compar
     render(workspace);
     if (activeToast && activeSaveExport) bind(workspace, activeToast, activeSaveExport);
     window.requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>(`[data-compare-row="${rowAddress}"]`)?.scrollIntoView({ block: "center" });
+      document.querySelector<HTMLElement>(`[data-compare-side-row="${side}-${rowAddress}"]`)?.scrollIntoView({ block: "center" });
     });
   } finally {
     state.loading = false;
@@ -300,7 +296,7 @@ async function refreshCompareView(workspace: HTMLElement): Promise<void> {
   if (selectedAddress !== null) {
     window.requestAnimationFrame(() => {
       const rowAddress = selectedAddress & ~(BYTES_PER_ROW - 1);
-      document.querySelector<HTMLElement>(`[data-compare-row="${rowAddress}"]`)?.scrollIntoView({ block: "center" });
+      document.querySelector<HTMLElement>(`[data-compare-side-row="${state.selectedSide ?? "left"}-${rowAddress}"]`)?.scrollIntoView({ block: "center" });
     });
   }
 }
@@ -379,7 +375,11 @@ function bind(workspace: HTMLElement, showToast: Toast, saveExport: SaveExport):
   });
 
   document.querySelectorAll<HTMLButtonElement>("[data-compare-jump-address]").forEach((button) => {
-    button.addEventListener("click", () => void loadAddress(workspace, Number(button.dataset.compareJumpAddress), state.selectedSide ?? "left"));
+    button.addEventListener("click", () => void loadAddress(
+      workspace,
+      Number(button.dataset.compareJumpAddress),
+      (button.dataset.compareJumpSide as CompareSide | undefined) ?? state.selectedSide ?? "left",
+    ));
   });
 
   document.querySelectorAll<HTMLFormElement>("[data-jump-side]").forEach((form) => {
