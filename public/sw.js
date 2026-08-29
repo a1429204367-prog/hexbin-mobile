@@ -1,10 +1,11 @@
-const CACHE = "hexbin-mobile-v6";
+const CACHE = "hexbin-mobile-v7";
 const SHELL = [
   "./",
   "./index.html",
   "./manifest.webmanifest",
   "./icon.svg",
   "./python/bridge.py",
+  "./python/compare_core.py",
   "./python/hexbin_core.py",
   "./python/line_checksum_core.py",
 ];

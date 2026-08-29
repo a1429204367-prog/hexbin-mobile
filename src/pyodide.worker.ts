@@ -42,7 +42,7 @@ async function getRuntime(): Promise<PyodideRuntime> {
         stdout: remember,
         stderr: remember,
       });
-      const files = ["hexbin_core.py", "line_checksum_core.py", "bridge.py"];
+      const files = ["hexbin_core.py", "compare_core.py", "line_checksum_core.py", "bridge.py"];
       for (const file of files) {
         phase = `读取核心文件 ${file}`;
         const response = await fetch(new URL(`python/${file}`, appRoot));

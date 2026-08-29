@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import hexbin_core as v50
+import compare_core as v55
 import line_checksum_core as v11
 
 
@@ -98,6 +99,7 @@ def _v50_metadata(item, original_name: str) -> dict:
         "displaySize": display_size,
         "segments": [{"start": start, "end": end, "size": end - start + 1} for start, end in item.segments],
         "checksums": checksum_rows,
+        "endAddress": base + display_size - 1,
     }
 
 
@@ -137,11 +139,50 @@ def open_file(tool: str, name: str, payload_b64: str) -> str:
     return _json(metadata)
 
 
+def _compare_metadata(item, original_name: str) -> dict:
+    metadata = _v50_metadata(item, original_name)
+    metadata.pop("sessionId", None)
+    return metadata
+
+
+def _compare_snapshot(session: dict) -> dict:
+    comparison = v55.compare_parameter_files(session["left"], session["right"])
+    session["comparison"] = comparison
+    session["line_starts"] = v55.build_shared_line_starts(session["left"], session["right"])
+    return v55.snapshot(comparison)
+
+
+def open_compare(
+    left_name: str,
+    left_payload_b64: str,
+    right_name: str,
+    right_payload_b64: str,
+) -> str:
+    left = _open_v50_file(_write_upload(left_name, left_payload_b64))
+    right = _open_v50_file(_write_upload(right_name, right_payload_b64))
+    session_id = uuid4().hex
+    session = {"tool": "v55", "left": left, "right": right, "left_name": left_name, "right_name": right_name}
+    SESSIONS[session_id] = session
+    return _json({
+        "sessionId": session_id,
+        "left": _compare_metadata(left, left_name),
+        "right": _compare_metadata(right, right_name),
+        "snapshot": _compare_snapshot(session),
+    })
+
+
 def _session(session_id: str) -> dict:
     try:
         return SESSIONS[session_id]
     except KeyError as exc:
         raise ValueError("文件会话已失效，请重新打开文件。") from exc
+
+
+def _compare_session(session_id: str) -> dict:
+    session = _session(session_id)
+    if session.get("tool") != "v55":
+        raise ValueError("当前文件不是 V55 对比会话。")
+    return session
 
 
 def _data(session: dict) -> bytearray:
@@ -156,6 +197,18 @@ def read_page(session_id: str, start: int, count: int) -> str:
     count = min(max(1, int(count)), 8192)
     end = min(len(data), start + count)
     return _json({"start": start, "end": end, "total": len(data), "bytes": list(data[start:end])})
+
+
+def read_compare_page(session_id: str, start_address: int, count: int) -> str:
+    session = _compare_session(session_id)
+    count = min(max(1, int(count)), 512)
+    return _json(v55.build_page(
+        session["left"],
+        session["right"],
+        session["line_starts"],
+        int(start_address),
+        count,
+    ))
 
 
 def edit_byte(session_id: str, offset: int, value: int) -> str:
@@ -193,6 +246,66 @@ def edit_byte(session_id: str, offset: int, value: int) -> str:
                 changed.add(partner)
         metadata = _v11_metadata(image, session["name"])
     return _json({"changed": sorted(changed), "metadata": metadata})
+
+
+def _edit_compare_side(session: dict, side: str, address: int, value: int) -> set[int]:
+    if side not in {"left", "right"}:
+        raise ValueError("未知的对比文件侧。")
+    if not 0 <= value <= 255:
+        raise ValueError("字节值必须在 00 到 FF 之间。")
+    item = session[side]
+    offset = int(address) - getattr(item, "display_base_address", item.min_address)
+    if offset < 0 or offset >= len(item.current_full_bin) or offset not in item.present_offsets:
+        raise ValueError(f"地址 0x{int(address):X} 在文件{side.upper()}中不是可编辑字节。")
+
+    data = item.current_full_bin
+    before = item.get_checksum_values(data)
+    data[offset] = value
+    changed_addresses = {int(address)}
+    after = item.apply_checksum_rules(data)
+    for index, new_value in after.items():
+        if before.get(index, b"") == new_value:
+            continue
+        region = item.checksum_regions[index - 1]
+        base = getattr(item, "display_base_address", item.min_address)
+        changed_addresses.update(base + region.checksum_offset + offset for offset in range(region.checksum_size))
+    return changed_addresses
+
+
+def _prepare_compare_side(item) -> set[int]:
+    data = item.current_full_bin
+    before = bytes(data)
+    item.mirror_first_segment_to_second(data)
+    item.apply_checksum_rules(data)
+    base = getattr(item, "display_base_address", item.min_address)
+    return {
+        base + offset
+        for offset, (before_value, after_value) in enumerate(zip(before, data))
+        if before_value != after_value
+    }
+
+
+def _compare_response(session: dict, changed_addresses: set[int]) -> dict:
+    return {
+        "changedAddresses": sorted(changed_addresses),
+        "snapshot": _compare_snapshot(session),
+        "left": _compare_metadata(session["left"], session["left_name"]),
+        "right": _compare_metadata(session["right"], session["right_name"]),
+    }
+
+
+def edit_compare_byte(session_id: str, side: str, address: int, value: int) -> str:
+    session = _compare_session(session_id)
+    changed_addresses = _edit_compare_side(session, side, int(address), int(value))
+    return _json(_compare_response(session, changed_addresses))
+
+
+def recalculate_compare_side(session_id: str, side: str) -> str:
+    session = _compare_session(session_id)
+    if side not in {"left", "right"}:
+        raise ValueError("未知的对比文件侧。")
+    item = session[side]
+    return _json(_compare_response(session, _prepare_compare_side(item)))
 
 
 def search(session_id: str, needle_hex: str, start: int) -> str:
@@ -243,3 +356,30 @@ def export_file(session_id: str, extension: str) -> str:
         "mime": "application/octet-stream",
         "payload": base64.b64encode(payload).decode("ascii"),
     })
+
+
+def export_compare(session_id: str, side: str, extension: str) -> str:
+    session = _compare_session(session_id)
+    if side not in {"left", "right"}:
+        raise ValueError("未知的对比文件侧。")
+    extension = extension.lower().lstrip(".")
+    if extension not in {"hex", "bin"}:
+        raise ValueError("V55 对比工具只能导出 HEX 或 BIN。")
+
+    item = session[side]
+    changed_addresses = _prepare_compare_side(item)
+    if extension == "bin":
+        payload = bytes(item.current_full_bin)
+    elif hasattr(item, "build_output_bytes"):
+        payload = item.build_output_bytes(item.current_full_bin)
+    else:
+        payload = ("\n".join(item.build_output_lines(item.current_full_bin)) + "\n").encode("ascii")
+
+    stem = Path(session[f"{side}_name"]).stem
+    result = _compare_response(session, changed_addresses)
+    result.update({
+        "name": f"{stem}_edited.{extension}",
+        "mime": "application/octet-stream",
+        "payload": base64.b64encode(payload).decode("ascii"),
+    })
+    return _json(result)

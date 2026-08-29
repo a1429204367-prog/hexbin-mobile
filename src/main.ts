@@ -1,5 +1,6 @@
 import "./style.css";
 import { core, type FileMetadata, type PageData, type ToolId } from "./api";
+import { renderCompare } from "./compare";
 
 const PAGE_SIZE = 16 * 64;
 const BYTES_PER_ROW = 16;
@@ -18,13 +19,14 @@ type ToolState = {
   searchOffset: number;
   busy: boolean;
 };
+type AppTool = ToolId | "v55";
 
 const states: Record<ToolId, ToolState> = {
   v50: { metadata: null, page: null, pageStart: 0, selectedOffset: null, searchOffset: -1, busy: false },
   v11: { metadata: null, page: null, pageStart: 0, selectedOffset: null, searchOffset: -1, busy: false },
 };
 
-let activeTool: ToolId = "v50";
+let activeTool: AppTool = "v50";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("页面初始化失败。");
@@ -41,6 +43,7 @@ app.innerHTML = `
     <nav class="tool-tabs" aria-label="工具选择">
       <button class="tool-tab active" data-tool="v50"><strong>主转换工具</strong><span>V50 · 总校验与格式转换</span></button>
       <button class="tool-tab" data-tool="v11"><strong>行校验工具</strong><span>V11 · 单行校验与通用导出</span></button>
+      <button class="tool-tab" data-tool="v55"><strong>参数对比</strong><span>V55 · 双文件同步对比</span></button>
     </nav>
     <section id="workspace"></section>
   </main>
@@ -69,23 +72,28 @@ function formatHex(value: number, width = 8): string {
 }
 
 function render(): void {
-  const state = states[activeTool];
+  if (activeTool === "v55") {
+    renderCompare(workspace, showToast, saveExport);
+    return;
+  }
+  const tool = activeTool;
+  const state = states[tool];
   const meta = state.metadata;
   workspace.innerHTML = `
     <section class="upload-card ${meta ? "compact" : ""}">
       <div>
-        <p class="section-label">${toolTitle(activeTool)}</p>
+        <p class="section-label">${toolTitle(tool)}</p>
         <h2>${meta ? escapeHtml(meta.name) : "打开一个固件文件"}</h2>
         <p>${meta ? `${escapeHtml(meta.format)} · ${escapeHtml(meta.family)}` : "支持 HEX、BIN、S19、S28、S37、MOT 等格式，文件不会上传。"}</p>
       </div>
       <label class="primary ${state.busy ? "disabled" : ""}">
         ${state.busy ? "正在载入核心…" : meta ? "更换文件" : "选择文件"}
-        <input id="fileInput" type="file" accept="${acceptedFiles(activeTool)}" ${state.busy ? "disabled" : ""} />
+        <input id="fileInput" type="file" accept="${acceptedFiles(tool)}" ${state.busy ? "disabled" : ""} />
       </label>
     </section>
-    ${meta && state.page ? renderEditor(state, meta) : renderEmptyGuide()}
+    ${meta && state.page ? renderEditor(state, meta, tool) : renderEmptyGuide()}
   `;
-  bindWorkspaceEvents();
+  bindWorkspaceEvents(tool);
 }
 
 function renderEmptyGuide(): string {
@@ -98,7 +106,7 @@ function renderEmptyGuide(): string {
   `;
 }
 
-function renderEditor(state: ToolState, meta: FileMetadata): string {
+function renderEditor(state: ToolState, meta: FileMetadata, tool: ToolId): string {
   const page = state.page!;
   const selected = state.selectedOffset;
   const selectedValue = selected === null || selected < page.start || selected >= page.end ? null : page.bytes[selected - page.start];
@@ -133,7 +141,7 @@ function renderEditor(state: ToolState, meta: FileMetadata): string {
             <button id="nextByte" class="byte-nav" type="button" title="下一字节" aria-label="下一字节" ${selected === null || selected >= meta.size - 1 ? "disabled" : ""}>→</button>
           </div>
         </div>
-        <div class="export-bar"><span>导出后会自动应用镜像和校验规则</span><div>${exportButtons(activeTool)}</div></div>
+        <div class="export-bar"><span>导出后会自动应用镜像和校验规则</span><div>${exportButtons(tool)}</div></div>
       </section>
     </div>
   `;
@@ -257,14 +265,14 @@ function parseAddress(raw: string, meta: FileMetadata): number {
   throw new Error(`地址范围是 ${formatHex(meta.baseAddress)} 到 ${formatHex(meta.baseAddress + meta.size - 1)}。`);
 }
 
-function bindByteButtons(state: ToolState): void {
+function bindByteButtons(state: ToolState, tool: ToolId): void {
   document.querySelectorAll<HTMLButtonElement>(".byte:not([data-bound])").forEach((button) => {
     button.dataset.bound = "true";
-    button.addEventListener("click", () => void selectByte(activeTool, Number(button.dataset.offset)));
+    button.addEventListener("click", () => void selectByte(tool, Number(button.dataset.offset)));
   });
 }
 
-function bindContinuousScroll(state: ToolState): void {
+function bindContinuousScroll(state: ToolState, tool: ToolId): void {
   const table = document.querySelector<HTMLElement>(".hex-table");
   if (!table || !state.metadata || !state.page) return;
   let loading = false;
@@ -311,7 +319,7 @@ function bindContinuousScroll(state: ToolState): void {
       }
       const status = document.querySelector<HTMLElement>("#rangeStatus");
       if (status) status.textContent = rangeStatusText(state.page, state.metadata);
-      bindByteButtons(state);
+      bindByteButtons(state, tool);
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error), true);
     } finally {
@@ -320,15 +328,15 @@ function bindContinuousScroll(state: ToolState): void {
   }, { passive: true });
 }
 
-function bindWorkspaceEvents(): void {
-  const state = states[activeTool];
+function bindWorkspaceEvents(tool: ToolId): void {
+  const state = states[tool];
   document.querySelector<HTMLInputElement>("#fileInput")?.addEventListener("change", async (event) => {
     const file = (event.currentTarget as HTMLInputElement).files?.[0];
     if (!file) return;
     state.busy = true;
     render();
     try {
-      state.metadata = await core.open(activeTool, file);
+      state.metadata = await core.open(tool, file);
       state.pageStart = 0;
       state.selectedOffset = null;
       state.searchOffset = -1;
@@ -344,8 +352,8 @@ function bindWorkspaceEvents(): void {
     }
   });
 
-  bindByteButtons(state);
-  bindContinuousScroll(state);
+  bindByteButtons(state, tool);
+  bindContinuousScroll(state, tool);
 
   document.querySelector<HTMLFormElement>("#jumpForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -353,7 +361,7 @@ function bindWorkspaceEvents(): void {
     try {
       const offset = parseAddress(document.querySelector<HTMLInputElement>("#jumpInput")!.value, state.metadata);
       state.selectedOffset = offset;
-      void loadPage(activeTool, Math.floor(offset / PAGE_SIZE) * PAGE_SIZE);
+      void loadPage(tool, Math.floor(offset / PAGE_SIZE) * PAGE_SIZE);
     } catch (error) { showToast(error instanceof Error ? error.message : String(error), true); }
   });
 
@@ -366,7 +374,7 @@ function bindWorkspaceEvents(): void {
       if (result.offset < 0) return showToast("没有找到该内容。 ", true);
       state.searchOffset = result.offset;
       state.selectedOffset = result.offset;
-      await loadPage(activeTool, Math.floor(result.offset / PAGE_SIZE) * PAGE_SIZE);
+      await loadPage(tool, Math.floor(result.offset / PAGE_SIZE) * PAGE_SIZE);
       showToast(`已找到 ${formatHex(state.metadata.baseAddress + result.offset)}。`);
     } catch (error) { showToast(error instanceof Error ? error.message : String(error), true); }
   });
@@ -409,10 +417,10 @@ function bindWorkspaceEvents(): void {
 
   document.querySelector("#applyEdit")?.addEventListener("click", () => void applySelectedEdit());
   document.querySelector("#previousByte")?.addEventListener("click", () => {
-    if (state.selectedOffset !== null) void selectByte(activeTool, state.selectedOffset - 1);
+    if (state.selectedOffset !== null) void selectByte(tool, state.selectedOffset - 1);
   });
   document.querySelector("#nextByte")?.addEventListener("click", () => {
-    if (state.selectedOffset !== null) void selectByte(activeTool, state.selectedOffset + 1);
+    if (state.selectedOffset !== null) void selectByte(tool, state.selectedOffset + 1);
   });
 
   const hexInput = document.querySelector<HTMLInputElement>("#hexEdit");
@@ -451,7 +459,7 @@ function bindWorkspaceEvents(): void {
 }
 
 document.querySelectorAll<HTMLButtonElement>(".tool-tab").forEach((button) => button.addEventListener("click", () => {
-  activeTool = button.dataset.tool as ToolId;
+  activeTool = button.dataset.tool as AppTool;
   document.querySelectorAll(".tool-tab").forEach((item) => item.classList.toggle("active", item === button));
   render();
 }));

@@ -20,6 +20,35 @@ export type FileMetadata = {
 };
 
 export type PageData = { start: number; end: number; total: number; bytes: number[] };
+export type CompareMetadata = Omit<FileMetadata, "tool" | "sessionId"> & { endAddress: number };
+export type CompareRow = {
+  address: number;
+  left: (number | null)[];
+  right: (number | null)[];
+  diffTypes: ("parameter" | "checksum" | "missing" | null)[];
+};
+export type ComparePage = { index: number; total: number; rows: CompareRow[] };
+export type CompareSnapshot = {
+  matchingCount: number;
+  parameterDifferenceCount: number;
+  checksumDifferenceCount: number;
+  leftOnlyCount: number;
+  rightOnlyCount: number;
+  totalDifferenceCount: number;
+  differenceAddresses: number[];
+};
+export type CompareSession = {
+  sessionId: string;
+  left: CompareMetadata;
+  right: CompareMetadata;
+  snapshot: CompareSnapshot;
+};
+export type CompareMutation = {
+  changedAddresses: number[];
+  snapshot: CompareSnapshot;
+  left: CompareMetadata;
+  right: CompareMetadata;
+};
 
 class CoreApi {
   private worker = new Worker(new URL("./pyodide.worker.ts", import.meta.url), { type: "module" });
@@ -69,6 +98,45 @@ class CoreApi {
 
   export(sessionId: string, extension: string): Promise<{ name: string; mime: string; payload: string }> {
     return this.call("export_file", sessionId, extension);
+  }
+
+  async openCompare(left: File, right: File): Promise<CompareSession> {
+    const encode = async (file: File): Promise<string> => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      const chunk = 0x8000;
+      for (let index = 0; index < bytes.length; index += chunk) {
+        binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+      }
+      return btoa(binary);
+    };
+    return this.call<CompareSession>(
+      "open_compare",
+      left.name,
+      await encode(left),
+      right.name,
+      await encode(right),
+    );
+  }
+
+  readComparePage(sessionId: string, startAddress: number, count: number): Promise<ComparePage> {
+    return this.call("read_compare_page", sessionId, startAddress, count);
+  }
+
+  editCompareByte(sessionId: string, side: "left" | "right", address: number, value: number): Promise<CompareMutation> {
+    return this.call("edit_compare_byte", sessionId, side, address, value);
+  }
+
+  recalculateCompareSide(sessionId: string, side: "left" | "right"): Promise<CompareMutation> {
+    return this.call("recalculate_compare_side", sessionId, side);
+  }
+
+  exportCompare(sessionId: string, side: "left" | "right", extension: string): Promise<CompareMutation & {
+    name: string;
+    mime: string;
+    payload: string;
+  }> {
+    return this.call("export_compare", sessionId, side, extension);
   }
 }
 
