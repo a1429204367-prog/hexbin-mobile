@@ -1,6 +1,6 @@
 type WorkerResponse = { id: number; ok: boolean; result?: string; error?: string };
 
-export type ToolId = "v50" | "v11";
+export type ToolId = "v50" | "v12";
 export type ChecksumRow = { segment: number; start: number; end: number; original: string; current: string };
 export type Segment = { start: number; end: number; size: number };
 export type FileMetadata = {

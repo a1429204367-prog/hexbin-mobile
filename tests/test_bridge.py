@@ -4,6 +4,7 @@ import base64
 import json
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -11,6 +12,7 @@ ROOT = PROJECT.parent
 sys.path.insert(0, str(PROJECT / "public" / "python"))
 
 import bridge
+import line_checksum_core as line_checksum
 
 
 def open_sample(tool: str, name: str) -> dict:
@@ -31,13 +33,41 @@ def test_v50_checksum_and_roundtrip() -> None:
     assert reopened["checksums"][0]["current"] == "A4 17"
 
 
-def test_v11_line_checksum() -> None:
-    metadata = open_sample("v11", "SHSJ01-B(1).hex")
+def test_v12_line_checksum() -> None:
+    metadata = open_sample("v12", "SHSJ01-B(1).hex")
     json.loads(bridge.edit_byte(metadata["sessionId"], 0, 0x51))
     exported = json.loads(bridge.export_file(metadata["sessionId"], "hex"))
     output = base64.b64decode(exported["payload"]).decode("ascii")
     expected = ":201000005105002019100010000000009910001000180400000100001149124A124B00F048"
     assert expected in output.splitlines()
+
+
+def test_v12_two_segment_save_copies_first_segment_on_export() -> None:
+    metadata = open_sample("v12", "728参数.Hex")
+    assert metadata["tool"] == "v12"
+    assert metadata["family"] == "两段式"
+    assert metadata["baseAddress"] == 0x4000
+    assert metadata["size"] == 0x2000
+    assert metadata["logicalSegmentSize"] == 0x2000
+
+    session = bridge.SESSIONS[metadata["sessionId"]]
+    image = session["item"]
+    original_first_byte = image.data[0]
+    assert len(image.data) == 0x2000
+
+    json.loads(bridge.edit_byte(metadata["sessionId"], 0, original_first_byte ^ 1))
+    assert len(image.data) == 0x2000
+
+    exported = json.loads(bridge.export_file(metadata["sessionId"], "hex"))
+    with TemporaryDirectory() as temp_dir:
+        output_path = Path(temp_dir) / "saved.hex"
+        output_path.write_bytes(base64.b64decode(exported["payload"]))
+        saved = line_checksum.parse_intel_hex(output_path)
+
+    segment_size = 0x2000
+    assert len(saved.data) == segment_size * 2
+    assert bytes(saved.data[:segment_size]) == bytes(saved.data[segment_size:])
+    assert saved.data[0] == original_first_byte ^ 1
 
 
 def test_v55_compare_edit_and_refresh() -> None:
@@ -118,7 +148,8 @@ def test_v55_export_returns_refreshed_compare_state() -> None:
 
 if __name__ == "__main__":
     test_v50_checksum_and_roundtrip()
-    test_v11_line_checksum()
+    test_v12_line_checksum()
+    test_v12_two_segment_save_copies_first_segment_on_export()
     test_v55_compare_edit_and_refresh()
     test_v55_recalculate_syncs_mirror_before_checksum()
     test_v55_export_returns_refreshed_compare_state()

@@ -1,4 +1,4 @@
-const CACHE = "hexbin-mobile-v10";
+const CACHE = "hexbin-mobile-v12";
 const SHELL = [
   "./",
   "./index.html",

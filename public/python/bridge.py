@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import hexbin_core as v50
 import compare_core as v55
-import line_checksum_core as v11
+import line_checksum_core as v12
 
 
 SESSIONS: dict[str, dict] = {}
@@ -103,12 +103,12 @@ def _v50_metadata(item, original_name: str) -> dict:
     }
 
 
-def _v11_metadata(image, original_name: str) -> dict:
+def _v12_metadata(image, original_name: str) -> dict:
     base = image.display_base_address if image.display_base_address is not None else image.base_address
     end = image.display_end_address if image.display_end_address is not None else image.end_address
     return {
         "name": original_name,
-        "tool": "v11",
+        "tool": "v12",
         "format": image.source_format,
         "family": image.layout_label,
         "checksumScheme": "每行格式校验",
@@ -128,9 +128,9 @@ def open_file(tool: str, name: str, payload_b64: str) -> str:
     if tool == "v50":
         item = _open_v50_file(path)
         metadata = _v50_metadata(item, name)
-    elif tool == "v11":
-        item = v11.load_image(path)
-        metadata = _v11_metadata(item, name)
+    elif tool == "v12":
+        item = v12.load_image(path)
+        metadata = _v12_metadata(item, name)
     else:
         raise ValueError("未知工具。")
     session_id = uuid4().hex
@@ -244,7 +244,7 @@ def edit_byte(session_id: str, offset: int, value: int) -> str:
             if partner is not None and 0 <= partner < len(data):
                 data[partner] = value
                 changed.add(partner)
-        metadata = _v11_metadata(image, session["name"])
+        metadata = _v12_metadata(image, session["name"])
     return _json({"changed": sorted(changed), "metadata": metadata})
 
 
@@ -310,7 +310,7 @@ def recalculate_compare_side(session_id: str, side: str) -> str:
 
 def search(session_id: str, needle_hex: str, start: int) -> str:
     session = _session(session_id)
-    needle = v11.parse_hex_search(needle_hex)
+    needle = v12.parse_hex_search(needle_hex)
     data = bytes(_data(session))
     start = max(0, int(start))
     found = data.find(needle, start)
@@ -341,11 +341,11 @@ def export_file(session_id: str, extension: str) -> str:
         suffix = "." + extension
         output = Path("/tmp") / f"{uuid4().hex}{suffix}"
         if extension == "bin":
-            v11.save_as_bin(output, item)
+            v12.save_as_bin(output, item)
         elif extension == "hex":
-            v11.save_as_intel_hex(output, item)
+            v12.save_as_intel_hex(output, item)
         elif extension in {"s19", "s28", "s37", "mot"}:
-            v11.save_as_srecord(output, item, suffix)
+            v12.save_as_srecord(output, item, suffix)
         else:
             raise ValueError("不支持该导出格式。")
         payload = output.read_bytes()

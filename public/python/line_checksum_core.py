@@ -14,6 +14,8 @@ HEX_GROUP_EXTRA_SPACES = 1
 EDITOR_HEX_START = 10
 EDITOR_HEX_WIDTH = BYTES_PER_LINE * 3 - 1 + HEX_GROUP_EXTRA_SPACES
 EDITOR_ASCII_START = EDITOR_HEX_START + EDITOR_HEX_WIDTH + 2
+DUPLICATED_PARAMETER_SEGMENT_SIZE = 0x2000
+DUPLICATED_PARAMETER_BASE_ADDRESSES = frozenset({0x4000, 0x84000})
 
 
 @dataclass
@@ -331,24 +333,26 @@ def find_address_hint(path: Path) -> tuple[int, int | None] | None:
     if lowered_name.startswith("p203728b000g05"):
         return (0x84000, 0x85FF0)
     return None
+
+
 def detect_special_layout(image: LoadedImage) -> LoadedImage:
-    is_p203728_layout = (
+    is_duplicated_parameter_layout = (
         image.source_format == "Intel HEX"
-        and image.base_address == 0x84000
-        and len(image.data) >= 0x2000
-        and len(image.data) <= 0x4000
+        and image.base_address in DUPLICATED_PARAMETER_BASE_ADDRESSES
+        and len(image.data) >= DUPLICATED_PARAMETER_SEGMENT_SIZE
+        and len(image.data) <= DUPLICATED_PARAMETER_SEGMENT_SIZE * 2
     )
-    if is_p203728_layout:
-        image.display_base_address = 0x84000
-        image.display_end_address = 0x85FF0
-        image.logical_segment_size = 0x2000
-        second_segment = image.data[0x2000:0x4000] if len(image.data) >= 0x4000 else b""
+    if is_duplicated_parameter_layout:
+        image.display_base_address = image.base_address
+        image.display_end_address = image.base_address + DUPLICATED_PARAMETER_SEGMENT_SIZE - 0x10
+        image.logical_segment_size = DUPLICATED_PARAMETER_SEGMENT_SIZE
+        second_segment = image.data[DUPLICATED_PARAMETER_SEGMENT_SIZE : DUPLICATED_PARAMETER_SEGMENT_SIZE * 2]
         has_second_segment_data = any(value != 0xFF for value in second_segment)
-        if len(image.data) >= 0x4000 and has_second_segment_data:
+        if len(image.data) >= DUPLICATED_PARAMETER_SEGMENT_SIZE * 2 and has_second_segment_data:
             image.layout_label = "两段式"
-            image.save_duplicate_span = 0x2000
+            image.save_duplicate_span = DUPLICATED_PARAMETER_SEGMENT_SIZE
             image.save_duplicate_count = 2
-            image.data = bytearray(image.data[:0x2000])
+            image.data = bytearray(image.data[:DUPLICATED_PARAMETER_SEGMENT_SIZE])
             image.mirror_span = None
             image.mirror_base_offset = 0
         else:

@@ -23,7 +23,7 @@ type AppTool = ToolId | "v55";
 
 const states: Record<ToolId, ToolState> = {
   v50: { metadata: null, page: null, pageStart: 0, selectedOffset: null, searchOffset: -1, busy: false },
-  v11: { metadata: null, page: null, pageStart: 0, selectedOffset: null, searchOffset: -1, busy: false },
+  v12: { metadata: null, page: null, pageStart: 0, selectedOffset: null, searchOffset: -1, busy: false },
 };
 
 let activeTool: AppTool = "v50";
@@ -42,7 +42,7 @@ app.innerHTML = `
   <main>
     <nav class="tool-tabs" aria-label="工具选择">
       <button class="tool-tab active" data-tool="v50"><strong>主转换工具</strong><span>V50 · 总校验与格式转换</span></button>
-      <button class="tool-tab" data-tool="v11"><strong>行校验工具</strong><span>V11 · 单行校验与通用导出</span></button>
+      <button class="tool-tab" data-tool="v12"><strong>行校验工具</strong><span>V12 · 单行校验与通用导出</span></button>
       <button class="tool-tab" data-tool="v55"><strong>参数对比</strong><span>V55 · 双文件同步对比</span></button>
     </nav>
     <section id="workspace"></section>
@@ -54,7 +54,7 @@ const workspace = document.querySelector<HTMLElement>("#workspace")!;
 const toast = document.querySelector<HTMLDivElement>("#toast")!;
 
 function toolTitle(tool: ToolId): string {
-  return tool === "v50" ? "主转换工具 V50" : "行校验工具 V11";
+  return tool === "v50" ? "主转换工具 V50" : "行校验工具 V12";
 }
 
 function acceptedFiles(tool: ToolId): string {
