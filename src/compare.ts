@@ -143,7 +143,8 @@ function asciiValue(value: number | null): string {
 function renderCompareRows(page: ComparePage): string {
   return page.rows.map((row) => {
     const renderSide = (side: CompareSide, values: (number | null)[]) => `
-      <div class="compare-side-values">
+      <div class="compare-side-values compare-side-${side}">
+        <strong class="compare-side-label">文件 ${sideLabel(side)}</strong>
         <div class="compare-byte-grid">${values.map((value, index) => {
           const address = row.address + index;
           const type = row.diffTypes[index];
