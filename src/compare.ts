@@ -260,11 +260,15 @@ async function loadAddress(workspace: HTMLElement, address: number, side: Compar
   state.selectedSide = side;
   try {
     const rowAddress = address & ~(BYTES_PER_ROW - 1);
-    state.page = await core.readComparePage(state.session.sessionId, rowAddress, COMPARE_PAGE_ROWS);
+    const pageStart = Math.max(
+      0,
+      rowAddress - Math.floor(COMPARE_PAGE_ROWS / 2) * BYTES_PER_ROW,
+    );
+    state.page = await core.readComparePage(state.session.sessionId, pageStart, COMPARE_PAGE_ROWS);
     render(workspace);
     if (activeToast && activeSaveExport) bind(workspace, activeToast, activeSaveExport);
     window.requestAnimationFrame(() => {
-      scrollCompareTablesToRow(rowAddress);
+      scrollCompareTablesToAddress(address, rowAddress);
     });
   } finally {
     state.loading = false;
@@ -275,13 +279,24 @@ function compareTables(): HTMLElement[] {
   return Array.from(document.querySelectorAll<HTMLElement>(".compare-editor-table"));
 }
 
-function scrollCompareTablesToRow(rowAddress: number): void {
+function scrollCompareTablesToAddress(address: number, rowAddress: number): void {
   for (const table of compareTables()) {
     const row = table.querySelector<HTMLElement>(`[data-compare-side-row$="-${rowAddress}"]`);
     if (!row) continue;
+    const tableRect = table.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const rowTop = rowRect.top - tableRect.top + table.scrollTop;
     const maximum = Math.max(0, table.scrollHeight - table.clientHeight);
-    const centeredTop = row.offsetTop - Math.max(0, (table.clientHeight - row.offsetHeight) / 2);
+    const centeredTop = rowTop - Math.max(0, (table.clientHeight - row.offsetHeight) / 2);
     table.scrollTop = Math.min(maximum, Math.max(0, centeredTop));
+
+    const byte = table.querySelector<HTMLElement>(`.compare-byte[data-compare-address="${address}"]`);
+    if (!byte) continue;
+    const byteRect = byte.getBoundingClientRect();
+    const byteLeft = byteRect.left - tableRect.left + table.scrollLeft;
+    const horizontalMaximum = Math.max(0, table.scrollWidth - table.clientWidth);
+    const centeredLeft = byteLeft - Math.max(0, (table.clientWidth - byteRect.width) / 2);
+    table.scrollLeft = Math.min(horizontalMaximum, Math.max(0, centeredLeft));
   }
 }
 
@@ -359,7 +374,7 @@ async function refreshCompareView(workspace: HTMLElement): Promise<void> {
   if (selectedAddress !== null) {
     window.requestAnimationFrame(() => {
       const rowAddress = selectedAddress & ~(BYTES_PER_ROW - 1);
-      scrollCompareTablesToRow(rowAddress);
+      scrollCompareTablesToAddress(selectedAddress, rowAddress);
     });
   }
 }
@@ -405,17 +420,22 @@ async function applyEdit(workspace: HTMLElement, showToast: Toast): Promise<void
     return;
   }
   const previousAddress = state.selectedAddress;
+  const editedSide = state.selectedSide;
+  const editedMeta = metadataFor(editedSide);
   const result = await core.editCompareByte(
     state.session.sessionId,
-    state.selectedSide,
+    editedSide,
     previousAddress,
     Number.parseInt(input.value, 16),
   );
   updateSession(result);
-  state.selectedAddress = syncDifferenceSelection(previousAddress);
-  if (state.selectedAddress === null) state.selectedAddress = previousAddress;
-  await loadAddress(workspace, state.selectedAddress, state.selectedSide);
-  showToast(`文件${sideLabel(state.selectedSide)}已修改，校验已自动重算。`, false);
+  state.currentDifferenceIndex = -1;
+  const nextAddress = editedMeta && previousAddress < editedMeta.endAddress
+    ? previousAddress + 1
+    : previousAddress;
+  state.selectedAddress = nextAddress;
+  await loadAddress(workspace, nextAddress, editedSide);
+  showToast(`文件${sideLabel(editedSide)}已修改，校验已自动重算。`, false);
 }
 
 function bind(workspace: HTMLElement, showToast: Toast, saveExport: SaveExport): void {
