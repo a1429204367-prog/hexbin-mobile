@@ -8,6 +8,8 @@ import {
 
 const BYTES_PER_ROW = 16;
 const COMPARE_PAGE_ROWS = 192;
+const COMPARE_MAX_RENDER_ROWS = COMPARE_PAGE_ROWS * 2;
+const COMPARE_SCROLL_THRESHOLD = 120;
 const COMPARE_FILE_ACCEPT = ".hex,.HEX,.hex_tmp,.s19,.S19,.s28,.S28,.s37,.S37,.mot,.MOT,.srec,.SREC,.bin,.BIN";
 const BYTE_COLUMN_LABELS = Array.from(
   { length: BYTES_PER_ROW },
@@ -214,8 +216,6 @@ function renderCompareSession(): string {
         <strong>${current} / ${differenceCount}</strong>
         <button id="compareNext" type="button" ${differenceCount ? "" : "disabled"}>下一处</button>
         <span class="compare-page-status">${totalRows ? `第 ${firstRow + 1}-${lastRow} / ${totalRows} 行` : "尚未加载数据"}</span>
-        <button id="comparePreviousPage" type="button" ${!page || page.index <= 0 ? "disabled" : ""}>上一段</button>
-        <button id="compareNextPage" type="button" ${!page || page.index + page.rows.length >= page.total ? "disabled" : ""}>下一段</button>
       </div>
       <div class="compare-editors" aria-label="V55 双文件十六进制对比">
         ${renderCompareEditor(session.left, "left", page)}
@@ -264,19 +264,82 @@ async function loadAddress(workspace: HTMLElement, address: number, side: Compar
     render(workspace);
     if (activeToast && activeSaveExport) bind(workspace, activeToast, activeSaveExport);
     window.requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>(`[data-compare-side-row="${side}-${rowAddress}"]`)?.scrollIntoView({ block: "center" });
+      scrollCompareTablesToRow(rowAddress);
     });
   } finally {
     state.loading = false;
   }
 }
 
-async function loadPage(workspace: HTMLElement, direction: -1 | 1): Promise<void> {
-  if (!state.page || !state.page.rows.length) return;
-  const address = direction < 0
-    ? Math.max(0, state.page.rows[0].address - COMPARE_PAGE_ROWS * BYTES_PER_ROW)
-    : state.page.rows[state.page.rows.length - 1].address + BYTES_PER_ROW;
-  await loadAddress(workspace, address, state.selectedSide ?? "left");
+function compareTables(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(".compare-editor-table"));
+}
+
+function scrollCompareTablesToRow(rowAddress: number): void {
+  for (const table of compareTables()) {
+    const row = table.querySelector<HTMLElement>(`[data-compare-side-row$="-${rowAddress}"]`);
+    if (!row) continue;
+    const maximum = Math.max(0, table.scrollHeight - table.clientHeight);
+    const centeredTop = row.offsetTop - Math.max(0, (table.clientHeight - row.offsetHeight) / 2);
+    table.scrollTop = Math.min(maximum, Math.max(0, centeredTop));
+  }
+}
+
+function restoreCompareScroll(top: number, left: number): void {
+  for (const table of compareTables()) {
+    table.scrollTop = top;
+    table.scrollLeft = left;
+  }
+}
+
+async function loadAdjacentComparePage(
+  workspace: HTMLElement,
+  direction: -1 | 1,
+  oldScrollTop: number,
+  oldScrollLeft: number,
+  rowHeight: number,
+): Promise<void> {
+  if (!state.session || !state.page?.rows.length || state.loading) return;
+  const currentPage = state.page;
+  const firstRow = currentPage.rows[0];
+  const lastRow = currentPage.rows[currentPage.rows.length - 1];
+  const hasPrevious = currentPage.index > 0;
+  const hasNext = currentPage.index + currentPage.rows.length < currentPage.total;
+  if ((direction < 0 && !hasPrevious) || (direction > 0 && !hasNext)) return;
+
+  const startAddress = direction < 0
+    ? firstRow.address - COMPARE_MAX_RENDER_ROWS * BYTES_PER_ROW
+    : lastRow.address + BYTES_PER_ROW;
+  const readCount = direction < 0 ? COMPARE_MAX_RENDER_ROWS : COMPARE_PAGE_ROWS;
+  state.loading = true;
+  try {
+    const adjacentPage = await core.readComparePage(state.session.sessionId, startAddress, readCount);
+    const adjacentRows = direction < 0
+      ? adjacentPage.rows.filter((row) => row.address < firstRow.address).slice(-COMPARE_PAGE_ROWS)
+      : adjacentPage.rows;
+    if (!adjacentRows.length) return;
+
+    const combinedRows = direction < 0
+      ? [...adjacentRows, ...currentPage.rows]
+      : [...currentPage.rows, ...adjacentRows];
+    const trimCount = Math.max(0, combinedRows.length - COMPARE_MAX_RENDER_ROWS);
+    const rows = direction < 0
+      ? combinedRows.slice(0, COMPARE_MAX_RENDER_ROWS)
+      : combinedRows.slice(trimCount);
+    const nextIndex = direction < 0 ? currentPage.index - adjacentRows.length : currentPage.index + trimCount;
+    const retainedCurrentFirst = rows.findIndex((row) => row.address === firstRow.address);
+    const prependedRows = retainedCurrentFirst >= 0 ? retainedCurrentFirst : adjacentRows.length;
+    const nextScrollTop = direction < 0
+      ? oldScrollTop + prependedRows * rowHeight
+      : Math.max(0, oldScrollTop - trimCount * rowHeight);
+
+    state.page = { index: nextIndex, total: adjacentPage.total, rows };
+    render(workspace);
+    if (activeToast && activeSaveExport) bind(workspace, activeToast, activeSaveExport);
+    window.requestAnimationFrame(() => restoreCompareScroll(nextScrollTop, oldScrollLeft));
+  } finally {
+    state.loading = false;
+  }
 }
 
 async function refreshCompareView(workspace: HTMLElement): Promise<void> {
@@ -296,7 +359,7 @@ async function refreshCompareView(workspace: HTMLElement): Promise<void> {
   if (selectedAddress !== null) {
     window.requestAnimationFrame(() => {
       const rowAddress = selectedAddress & ~(BYTES_PER_ROW - 1);
-      document.querySelector<HTMLElement>(`[data-compare-side-row="${state.selectedSide ?? "left"}-${rowAddress}"]`)?.scrollIntoView({ block: "center" });
+      scrollCompareTablesToRow(rowAddress);
     });
   }
 }
@@ -412,8 +475,36 @@ function bind(workspace: HTMLElement, showToast: Toast, saveExport: SaveExport):
     state.currentDifferenceIndex = index;
     void loadAddress(workspace, addresses[index], state.selectedSide ?? "left");
   });
-  document.querySelector<HTMLButtonElement>("#comparePreviousPage")?.addEventListener("click", () => void loadPage(workspace, -1));
-  document.querySelector<HTMLButtonElement>("#compareNextPage")?.addEventListener("click", () => void loadPage(workspace, 1));
+
+  const tables = compareTables();
+  let syncingScroll = false;
+  for (const table of tables) {
+    table.addEventListener("scroll", (event) => {
+      if (syncingScroll || state.loading || !state.page?.rows.length) return;
+      const source = event.currentTarget as HTMLElement;
+      const scrollTop = source.scrollTop;
+      const scrollLeft = source.scrollLeft;
+      syncingScroll = true;
+      for (const other of tables) {
+        if (other === source) continue;
+        other.scrollTop = scrollTop;
+        other.scrollLeft = scrollLeft;
+      }
+      window.requestAnimationFrame(() => { syncingScroll = false; });
+
+      const nearTop = scrollTop <= COMPARE_SCROLL_THRESHOLD;
+      const nearBottom = source.scrollHeight - scrollTop - source.clientHeight <= COMPARE_SCROLL_THRESHOLD;
+      const canLoadPrevious = nearTop && state.page.index > 0;
+      const canLoadNext = nearBottom && state.page.index + state.page.rows.length < state.page.total;
+      if (!canLoadPrevious && !canLoadNext) return;
+
+      const direction: -1 | 1 = canLoadPrevious ? -1 : 1;
+      const rowHeight = source.querySelector<HTMLElement>(".compare-side-row")?.getBoundingClientRect().height ?? 0;
+      void loadAdjacentComparePage(workspace, direction, scrollTop, scrollLeft, rowHeight).catch((error) => {
+        showToast(error instanceof Error ? error.message : String(error), true);
+      });
+    }, { passive: true });
+  }
 
   document.querySelector<HTMLButtonElement>("#compareApplyEdit")?.addEventListener("click", () => {
     void applyEdit(workspace, showToast).catch((error) => showToast(error instanceof Error ? error.message : String(error), true));
