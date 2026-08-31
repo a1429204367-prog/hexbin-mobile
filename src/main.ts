@@ -208,6 +208,25 @@ async function loadPage(tool: ToolId, start: number): Promise<void> {
   render();
 }
 
+function scrollHexTableToOffset(offset: number): void {
+  const table = document.querySelector<HTMLElement>(".hex-table");
+  const byte = table?.querySelector<HTMLElement>(`.byte[data-offset="${offset}"]`);
+  if (!table || !byte) return;
+
+  const tableRect = table.getBoundingClientRect();
+  const byteRect = byte.getBoundingClientRect();
+  const byteTop = byteRect.top - tableRect.top + table.scrollTop;
+  const maximumTop = Math.max(0, table.scrollHeight - table.clientHeight);
+  const centeredTop = byteTop - Math.max(0, (table.clientHeight - byteRect.height) / 2);
+  table.scrollTop = Math.min(maximumTop, Math.max(0, centeredTop));
+
+  const updatedByteRect = byte.getBoundingClientRect();
+  const byteLeft = updatedByteRect.left - tableRect.left + table.scrollLeft;
+  const maximumLeft = Math.max(0, table.scrollWidth - table.clientWidth);
+  const centeredLeft = byteLeft - Math.max(0, (table.clientWidth - updatedByteRect.width) / 2);
+  table.scrollLeft = Math.min(maximumLeft, Math.max(0, centeredLeft));
+}
+
 function focusHexEditor(): void {
   window.requestAnimationFrame(() => {
     const input = document.querySelector<HTMLInputElement>("#hexEdit");
@@ -226,6 +245,7 @@ async function selectByte(tool: ToolId, offset: number): Promise<void> {
     state.pageStart = targetPageStart;
     state.page = await core.readPage(state.metadata.sessionId, targetPageStart, PAGE_SIZE);
     render();
+    window.requestAnimationFrame(() => scrollHexTableToOffset(offset));
     focusHexEditor();
     return;
   }
@@ -361,7 +381,9 @@ function bindWorkspaceEvents(tool: ToolId): void {
     try {
       const offset = parseAddress(document.querySelector<HTMLInputElement>("#jumpInput")!.value, state.metadata);
       state.selectedOffset = offset;
-      void loadPage(tool, Math.floor(offset / PAGE_SIZE) * PAGE_SIZE);
+      void loadPage(tool, Math.floor(offset / PAGE_SIZE) * PAGE_SIZE).then(() => {
+        window.requestAnimationFrame(() => scrollHexTableToOffset(offset));
+      });
     } catch (error) { showToast(error instanceof Error ? error.message : String(error), true); }
   });
 
@@ -375,6 +397,7 @@ function bindWorkspaceEvents(tool: ToolId): void {
       state.searchOffset = result.offset;
       state.selectedOffset = result.offset;
       await loadPage(tool, Math.floor(result.offset / PAGE_SIZE) * PAGE_SIZE);
+      window.requestAnimationFrame(() => scrollHexTableToOffset(result.offset));
       showToast(`已找到 ${formatHex(state.metadata.baseAddress + result.offset)}。`);
     } catch (error) { showToast(error instanceof Error ? error.message : String(error), true); }
   });
