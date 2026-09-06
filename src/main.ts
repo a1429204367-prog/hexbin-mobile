@@ -121,7 +121,7 @@ function renderEditor(state: ToolState, meta: FileMetadata, tool: ToolId): strin
           <div><span>识别结构</span><strong>${escapeHtml(meta.family)}</strong></div>
           <div><span>校验方式</span><strong>${escapeHtml(meta.checksumScheme)}</strong></div>
         </div>
-        <details open><summary>数据段 (${meta.segments.length})</summary><div class="detail-list">${meta.segments.map((item, index) => `<p><b>${index + 1}</b><span>${formatHex(item.start)} — ${formatHex(item.end)}<small>${item.size.toLocaleString()} 字节</small></span></p>`).join("")}</div></details>
+        <details><summary>数据段 (${meta.segments.length})</summary><div class="detail-list">${meta.segments.map((item, index) => `<p><b>${index + 1}</b><span>${formatHex(item.start)} — ${formatHex(item.end)}<small>${item.size.toLocaleString()} 字节</small></span></p>`).join("")}</div></details>
         ${meta.checksums.length ? `<details open><summary>总校验</summary><div class="checksum-list">${meta.checksums.map((item) => `<p><span>段 ${item.segment}</span><code>${item.current || "—"}</code><small>${formatHex(item.start)} — ${formatHex(item.end)}</small></p>`).join("")}</div></details>` : ""}
       </aside>
       <section class="editor-panel">
