@@ -259,16 +259,16 @@ async function loadAddress(workspace: HTMLElement, address: number, side: Compar
   state.selectedAddress = address;
   state.selectedSide = side;
   try {
-    const rowAddress = address & ~(BYTES_PER_ROW - 1);
+    // 由核心统一对齐行首，避免前端位运算把高位地址转换成负数。
     const pageStart = Math.max(
       0,
-      rowAddress - Math.floor(COMPARE_PAGE_ROWS / 2) * BYTES_PER_ROW,
+      address - Math.floor(COMPARE_PAGE_ROWS / 2) * BYTES_PER_ROW,
     );
     state.page = await core.readComparePage(state.session.sessionId, pageStart, COMPARE_PAGE_ROWS);
     render(workspace);
     if (activeToast && activeSaveExport) bind(workspace, activeToast, activeSaveExport);
     window.requestAnimationFrame(() => {
-      scrollCompareTablesToAddress(address, rowAddress);
+      scrollCompareTablesToAddress(address);
     });
   } finally {
     state.loading = false;
@@ -279,20 +279,17 @@ function compareTables(): HTMLElement[] {
   return Array.from(document.querySelectorAll<HTMLElement>(".compare-editor-table"));
 }
 
-function scrollCompareTablesToAddress(address: number, rowAddress: number): void {
+function scrollCompareTablesToAddress(address: number): void {
   for (const table of compareTables()) {
-    const row = table.querySelector<HTMLElement>(`[data-compare-side-row$="-${rowAddress}"]`);
-    if (!row) continue;
-    const tableRect = table.getBoundingClientRect();
-    const rowRect = row.getBoundingClientRect();
-    const rowTop = rowRect.top - tableRect.top + table.scrollTop;
-    const maximum = Math.max(0, table.scrollHeight - table.clientHeight);
-    const centeredTop = rowTop - Math.max(0, (table.clientHeight - row.offsetHeight) / 2);
-    table.scrollTop = Math.min(maximum, Math.max(0, centeredTop));
-
     const byte = table.querySelector<HTMLElement>(`.compare-byte[data-compare-address="${address}"]`);
     if (!byte) continue;
+    const tableRect = table.getBoundingClientRect();
     const byteRect = byte.getBoundingClientRect();
+    const byteTop = byteRect.top - tableRect.top + table.scrollTop;
+    const maximum = Math.max(0, table.scrollHeight - table.clientHeight);
+    const centeredTop = byteTop - Math.max(0, (table.clientHeight - byte.offsetHeight) / 2);
+    table.scrollTop = Math.min(maximum, Math.max(0, centeredTop));
+
     const byteLeft = byteRect.left - tableRect.left + table.scrollLeft;
     const horizontalMaximum = Math.max(0, table.scrollWidth - table.clientWidth);
     const centeredLeft = byteLeft - Math.max(0, (table.clientWidth - byteRect.width) / 2);
@@ -373,8 +370,7 @@ async function refreshCompareView(workspace: HTMLElement): Promise<void> {
   if (activeToast && activeSaveExport) bind(workspace, activeToast, activeSaveExport);
   if (selectedAddress !== null) {
     window.requestAnimationFrame(() => {
-      const rowAddress = selectedAddress & ~(BYTES_PER_ROW - 1);
-      scrollCompareTablesToAddress(selectedAddress, rowAddress);
+      scrollCompareTablesToAddress(selectedAddress);
     });
   }
 }
