@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 tk = None
 filedialog = messagebox = ttk = ScrolledText = None
@@ -34,6 +34,7 @@ class IntelRecord:
     data: bytes
     checksum: int
     absolute_address: int | None = None
+    checksum_valid: bool = True
 
 
 @dataclass
@@ -44,6 +45,7 @@ class SrecRecord:
     address: int
     data: bytes
     checksum: int
+    checksum_valid: bool = True
 
 
 @dataclass
@@ -69,6 +71,7 @@ class LoadedImage:
     save_duplicate_count: int = 1
     mirror_span: int | None = None
     mirror_base_offset: int = 0
+    checksum_errors: list[str] = field(default_factory=list)
 
     @property
     def end_address(self) -> int:
@@ -134,6 +137,7 @@ def parse_intel_hex(path: Path) -> LoadedImage:
     memory: dict[int, int] = {}
     upper = 0
     records: list[IntelRecord] = []
+    checksum_errors: list[str] = []
     raw_bytes = path.read_bytes()
     line_ending = detect_line_ending(raw_bytes)
     has_trailing_newline = raw_bytes.endswith(line_ending.encode("ascii"))
@@ -152,8 +156,14 @@ def parse_intel_hex(path: Path) -> LoadedImage:
                 checksum = int(line[9 + byte_count * 2 : 11 + byte_count * 2], 16)
             except ValueError as exc:
                 raise ValueError(f"第 {line_number} 行格式错误。") from exc
-            if len(data) != byte_count or intel_checksum(byte_count, address, record_type, data) != checksum:
+            if len(data) != byte_count:
                 raise ValueError(f"第 {line_number} 行 Intel HEX 单行校验错误。")
+            expected_checksum = intel_checksum(byte_count, address, record_type, data)
+            checksum_valid = expected_checksum == checksum
+            if not checksum_valid:
+                checksum_errors.append(
+                    f"第 {line_number} 行 Intel HEX 单行校验错误（文件值 {checksum:02X}，应为 {expected_checksum:02X}）。"
+                )
 
             if record_type == 0x00:
                 absolute = upper + address
@@ -171,6 +181,7 @@ def parse_intel_hex(path: Path) -> LoadedImage:
                         data=data,
                         checksum=checksum,
                         absolute_address=absolute_address,
+                        checksum_valid=checksum_valid,
                     )
                 )
                 break
@@ -196,6 +207,7 @@ def parse_intel_hex(path: Path) -> LoadedImage:
                     data=data,
                     checksum=checksum,
                     absolute_address=absolute_address,
+                    checksum_valid=checksum_valid,
                 )
             )
 
@@ -206,6 +218,7 @@ def parse_intel_hex(path: Path) -> LoadedImage:
     image.line_ending = line_ending
     image.has_trailing_newline = has_trailing_newline
     image.intel_records = records
+    image.checksum_errors = checksum_errors
     return image
 
 
@@ -243,6 +256,7 @@ def parse_srecord(path: Path) -> LoadedImage:
     last_data_end_address: int | None = None
     execution_record_type: str | None = None
     execution_address: int | None = None
+    checksum_errors: list[str] = []
     raw_bytes = path.read_bytes()
     line_ending = detect_line_ending(raw_bytes)
     has_trailing_newline = raw_bytes.endswith(line_ending.encode("ascii"))
@@ -270,8 +284,12 @@ def parse_srecord(path: Path) -> LoadedImage:
             address = int.from_bytes(payload[:address_length], "big")
             data = payload[address_length:-1]
             checksum = payload[-1]
-            if srec_checksum(record_type, address, data, count_override=count) != checksum:
-                raise ValueError(f"第 {line_number} 行 S Record 单行校验错误。")
+            expected_checksum = srec_checksum(record_type, address, data, count_override=count)
+            checksum_valid = expected_checksum == checksum
+            if not checksum_valid:
+                checksum_errors.append(
+                    f"第 {line_number} 行 S Record 单行校验错误（文件值 {checksum:02X}，应为 {expected_checksum:02X}）。"
+                )
             records.append(
                 SrecRecord(
                     raw_line=line,
@@ -280,6 +298,7 @@ def parse_srecord(path: Path) -> LoadedImage:
                     address=address,
                     data=data,
                     checksum=checksum,
+                    checksum_valid=checksum_valid,
                 )
             )
             if record_type in {"1", "2", "3"}:
@@ -304,6 +323,7 @@ def parse_srecord(path: Path) -> LoadedImage:
     image.srec_last_data_end_address = last_data_end_address
     image.srec_execution_record_type = execution_record_type
     image.srec_execution_address = execution_address
+    image.checksum_errors = checksum_errors
     return image
 
 
@@ -415,12 +435,15 @@ def save_as_intel_hex(path: Path, image: LoadedImage) -> None:
         for record in image.intel_records:
             if record.record_type == 0x00 and record.absolute_address is not None:
                 current_data = image_slice(image, record.absolute_address, record.byte_count)
-                if current_data == record.data:
+                if current_data == record.data and record.checksum_valid:
                     lines.append(record.raw_line)
                 else:
                     lines.append(encode_intel_record(record.address, record.record_type, current_data))
             else:
-                lines.append(record.raw_line)
+                if record.checksum_valid:
+                    lines.append(record.raw_line)
+                else:
+                    lines.append(encode_intel_record(record.address, record.record_type, record.data))
         text = image.line_ending.join(lines)
         if image.has_trailing_newline:
             text += image.line_ending
@@ -456,12 +479,22 @@ def save_as_srecord(path: Path, image: LoadedImage, suffix: str) -> None:
         for record in image.srec_records:
             if record.record_type in {"1", "2", "3"}:
                 current_data = image_slice(image, record.address, len(record.data))
-                if current_data == record.data:
+                if current_data == record.data and record.checksum_valid:
                     lines.append(record.raw_line)
                 else:
                     lines.append(encode_srec_record(record.record_type, record.address, current_data, count_override=record.count))
             else:
-                lines.append(record.raw_line)
+                if record.checksum_valid:
+                    lines.append(record.raw_line)
+                else:
+                    lines.append(
+                        encode_srec_record(
+                            record.record_type,
+                            record.address,
+                            record.data,
+                            count_override=record.count,
+                        )
+                    )
         text = image.line_ending.join(lines)
         if image.has_trailing_newline:
             text += image.line_ending

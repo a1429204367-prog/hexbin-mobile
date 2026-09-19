@@ -42,6 +42,44 @@ def test_v12_line_checksum() -> None:
     assert expected in output.splitlines()
 
 
+def test_v14_invalid_intel_hex_checksum_opens_and_exports() -> None:
+    valid_data = line_checksum.encode_intel_record(0x0010, 0x00, bytes.fromhex("1234"))
+    invalid_data = f"{valid_data[:-2]}00"
+    eof = line_checksum.encode_intel_record(0, 0x01, b"")
+    payload = base64.b64encode(f"{invalid_data}\n{eof}\n".encode("ascii")).decode("ascii")
+
+    metadata = json.loads(bridge.open_file("v12", "invalid.hex", payload))
+
+    assert len(metadata["checksumErrors"]) == 1
+    exported = json.loads(bridge.export_file(metadata["sessionId"], "hex"))
+    with TemporaryDirectory() as temp_dir:
+        output_path = Path(temp_dir) / "saved.hex"
+        output_path.write_bytes(base64.b64decode(exported["payload"]))
+        saved = line_checksum.parse_intel_hex(output_path)
+
+    assert saved.checksum_errors == []
+    assert bytes(saved.data) == bytes.fromhex("1234")
+
+
+def test_v14_invalid_srecord_checksum_opens_and_exports() -> None:
+    valid_data = line_checksum.encode_srec_record("1", 0x1000, bytes.fromhex("ABCD"))
+    invalid_data = f"{valid_data[:-2]}00"
+    end = line_checksum.encode_srec_record("9", 0, b"")
+    payload = base64.b64encode(f"{invalid_data}\n{end}\n".encode("ascii")).decode("ascii")
+
+    metadata = json.loads(bridge.open_file("v12", "invalid.s19", payload))
+
+    assert len(metadata["checksumErrors"]) == 1
+    exported = json.loads(bridge.export_file(metadata["sessionId"], "s19"))
+    with TemporaryDirectory() as temp_dir:
+        output_path = Path(temp_dir) / "saved.s19"
+        output_path.write_bytes(base64.b64decode(exported["payload"]))
+        saved = line_checksum.parse_srecord(output_path)
+
+    assert saved.checksum_errors == []
+    assert bytes(saved.data) == bytes.fromhex("ABCD")
+
+
 def test_v12_two_segment_save_copies_first_segment_on_export() -> None:
     metadata = open_sample("v12", "728参数.Hex")
     assert metadata["tool"] == "v12"
@@ -149,6 +187,8 @@ def test_v55_export_returns_refreshed_compare_state() -> None:
 if __name__ == "__main__":
     test_v50_checksum_and_roundtrip()
     test_v12_line_checksum()
+    test_v14_invalid_intel_hex_checksum_opens_and_exports()
+    test_v14_invalid_srecord_checksum_opens_and_exports()
     test_v12_two_segment_save_copies_first_segment_on_export()
     test_v55_compare_edit_and_refresh()
     test_v55_recalculate_syncs_mirror_before_checksum()

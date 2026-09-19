@@ -42,7 +42,7 @@ app.innerHTML = `
   <main>
     <nav class="tool-tabs" aria-label="工具选择">
       <button class="tool-tab active" data-tool="v50"><strong>主转换工具</strong><span>V50 · 总校验与格式转换</span></button>
-      <button class="tool-tab" data-tool="v12"><strong>行校验工具</strong><span>V12 · 单行校验与通用导出</span></button>
+      <button class="tool-tab" data-tool="v12"><strong>行校验工具</strong><span>V14 · 单行校验与通用导出</span></button>
       <button class="tool-tab" data-tool="v55"><strong>参数对比</strong><span>V55 · 双文件同步对比</span></button>
     </nav>
     <section id="workspace"></section>
@@ -54,7 +54,7 @@ const workspace = document.querySelector<HTMLElement>("#workspace")!;
 const toast = document.querySelector<HTMLDivElement>("#toast")!;
 
 function toolTitle(tool: ToolId): string {
-  return tool === "v50" ? "主转换工具 V50" : "行校验工具 V12";
+  return tool === "v50" ? "主转换工具 V50" : "行校验工具 V14";
 }
 
 function acceptedFiles(tool: ToolId): string {
@@ -106,6 +106,15 @@ function renderEmptyGuide(): string {
   `;
 }
 
+function renderChecksumWarning(meta: FileMetadata): string {
+  const errors = meta.checksumErrors ?? [];
+  if (!errors.length) return "";
+  const preview = errors.slice(0, 5).map(escapeHtml).join("<br>");
+  const remaining = errors.length - 5;
+  const suffix = remaining > 0 ? `<br>……还有 ${remaining} 行。` : "";
+  return `<div class="checksum-warning" role="alert"><strong>发现 ${errors.length} 行单行校验错误</strong><p>${preview}${suffix}</p><small>文件仍可编辑，导出前会提示确认。</small></div>`;
+}
+
 function renderEditor(state: ToolState, meta: FileMetadata, tool: ToolId): string {
   const page = state.page!;
   const selected = state.selectedOffset;
@@ -121,6 +130,7 @@ function renderEditor(state: ToolState, meta: FileMetadata, tool: ToolId): strin
           <div><span>识别结构</span><strong>${escapeHtml(meta.family)}</strong></div>
           <div><span>校验方式</span><strong>${escapeHtml(meta.checksumScheme)}</strong></div>
         </div>
+        ${renderChecksumWarning(meta)}
         <details><summary>数据段 (${meta.segments.length})</summary><div class="detail-list">${meta.segments.map((item, index) => `<p><b>${index + 1}</b><span>${formatHex(item.start)} — ${formatHex(item.end)}<small>${item.size.toLocaleString()} 字节</small></span></p>`).join("")}</div></details>
         ${meta.checksums.length ? `<details open><summary>总校验</summary><div class="checksum-list">${meta.checksums.map((item) => `<p><span>段 ${item.segment}</span><code>${item.current || "—"}</code><small>${formatHex(item.start)} — ${formatHex(item.end)}</small></p>`).join("")}</div></details>` : ""}
       </aside>
@@ -141,7 +151,7 @@ function renderEditor(state: ToolState, meta: FileMetadata, tool: ToolId): strin
             <button id="nextByte" class="byte-nav" type="button" title="下一字节" aria-label="下一字节" ${selected === null || selected >= meta.size - 1 ? "disabled" : ""}>→</button>
           </div>
         </div>
-        <div class="export-bar"><span>导出后会自动应用镜像和校验规则</span><div>${exportButtons(tool)}</div></div>
+        <div class="export-bar"><span>导出记录文件时会重新计算每行校验</span><div>${exportButtons(tool)}</div></div>
       </section>
     </div>
   `;
@@ -361,7 +371,12 @@ function bindWorkspaceEvents(tool: ToolId): void {
       state.selectedOffset = null;
       state.searchOffset = -1;
       state.page = await core.readPage(state.metadata.sessionId, 0, PAGE_SIZE);
-      showToast("文件已打开，核心算法在本机运行。 ");
+      const checksumErrors = state.metadata.checksumErrors ?? [];
+      showToast(
+        checksumErrors.length
+          ? `文件已打开，发现 ${checksumErrors.length} 行校验错误，导出前会提示。`
+          : "文件已打开，核心算法在本机运行。 ",
+      );
     } catch (error) {
       state.metadata = null;
       state.page = null;
@@ -471,6 +486,19 @@ function bindWorkspaceEvents(tool: ToolId): void {
     if (!state.metadata) return;
     button.disabled = true;
     try {
+      const checksumErrors = state.metadata.checksumErrors ?? [];
+      if (checksumErrors.length) {
+        const preview = checksumErrors.slice(0, 5).join("\n");
+        const remaining = checksumErrors.length - 5;
+        const suffix = remaining > 0 ? `\n……还有 ${remaining} 行。` : "";
+        const shouldContinue = window.confirm(
+          `打开文件时发现 ${checksumErrors.length} 行单行校验错误。\n${preview}${suffix}\n\n继续导出时，记录文件中的相关行会重新计算校验值。\n是否继续导出？`,
+        );
+        if (!shouldContinue) {
+          showToast("已取消导出。 ");
+          return;
+        }
+      }
       const output = await core.export(state.metadata.sessionId, button.dataset.format!);
       const binary = atob(output.payload);
       const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));

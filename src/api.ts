@@ -17,6 +17,7 @@ export type FileMetadata = {
   checksums: ChecksumRow[];
   logicalSegmentSize?: number | null;
   mirrorSpan?: number | null;
+  checksumErrors?: string[];
 };
 
 export type PageData = { start: number; end: number; total: number; bytes: number[] };

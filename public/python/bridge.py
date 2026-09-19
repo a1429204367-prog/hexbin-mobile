@@ -120,6 +120,7 @@ def _v12_metadata(image, original_name: str) -> dict:
         "mirrorSpan": image.mirror_span,
         "segments": [{"start": base, "end": end, "size": len(image.data)}],
         "checksums": [],
+        "checksumErrors": image.checksum_errors,
     }
 
 
