@@ -343,6 +343,12 @@ def export_file(session_id: str, extension: str) -> str:
         output = Path("/tmp") / f"{uuid4().hex}{suffix}"
         if extension == "bin":
             v12.save_as_bin(output, item)
+        elif suffix == item.source_suffix and item.source_format == "S Record":
+            # A .hex file can contain S-records; preserve its source records,
+            # as the desktop editor does, instead of expanding address gaps.
+            v12.save_as_srecord(output, item, suffix)
+        elif suffix == item.source_suffix and item.source_format == "Intel HEX":
+            v12.save_as_intel_hex(output, item)
         elif extension == "hex":
             v12.save_as_intel_hex(output, item)
         elif extension in {"s19", "s28", "s37", "mot"}:

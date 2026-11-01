@@ -80,6 +80,59 @@ def test_v14_invalid_srecord_checksum_opens_and_exports() -> None:
     assert bytes(saved.data) == bytes.fromhex("ABCD")
 
 
+def test_v14_original_suffix_preserves_record_format() -> None:
+    # Extensions do not identify the record format. Exercise both mismatches
+    # and native suffixes, with distant records that must not become filler.
+    for source_format, suffixes in (
+        ("S Record", ("hex", "s19", "mot", "s28", "s37")),
+        ("Intel HEX", ("hex", "s19", "mot")),
+    ):
+        if source_format == "S Record":
+            records = [
+                line_checksum.encode_srec_record("0", 0, b"HEADER"),
+                line_checksum.encode_srec_record("3", 0x81FFB8, b"\x12\x34"),
+                line_checksum.encode_srec_record("3", 0x83FF70, b"\x56\x78"),
+                line_checksum.encode_srec_record("7", 0x81FFB8, b""),
+            ]
+            parse = line_checksum.parse_srecord
+        else:
+            records = [
+                line_checksum.encode_intel_record(0, 4, b"\x00\x81"),
+                line_checksum.encode_intel_record(0xFFB8, 0, b"\x12\x34"),
+                line_checksum.encode_intel_record(0, 4, b"\x00\x83"),
+                line_checksum.encode_intel_record(0xFF70, 0, b"\x56\x78"),
+                line_checksum.encode_intel_record(0, 1, b""),
+            ]
+            parse = line_checksum.parse_intel_hex
+
+        for suffix in suffixes:
+            for ending in ("\n", "\r\n"):
+                for trailing in (False, True):
+                    source = (ending.join(records) + (ending if trailing else "")).encode("ascii")
+                    metadata = json.loads(bridge.open_file(
+                        "v12", f"parameter.{suffix}", base64.b64encode(source).decode("ascii"),
+                    ))
+                    session_id = metadata["sessionId"]
+                    assert metadata["format"] == source_format
+                    unchanged = json.loads(bridge.export_file(session_id, suffix))
+                    assert base64.b64decode(unchanged["payload"]) == source
+
+                    json.loads(bridge.edit_byte(session_id, 0, 0xAB))
+                    exported = json.loads(bridge.export_file(session_id, suffix))
+                    output = base64.b64decode(exported["payload"])
+                    assert len(output) == len(source)
+                    changed = [i for i, pair in enumerate(zip(source.splitlines(), output.splitlines())) if pair[0] != pair[1]]
+                    assert changed == [1]
+                    with TemporaryDirectory() as temp_dir:
+                        path = Path(temp_dir) / exported["name"]
+                        path.write_bytes(output)
+                        saved = parse(path)
+                    assert saved.checksum_errors == []
+                    assert saved.data[0] == 0xAB
+                    assert saved.data[1] == 0x34
+                    assert saved.data[-2:] == b"\x56\x78"
+
+
 def test_v12_two_segment_save_copies_first_segment_on_export() -> None:
     metadata = open_sample("v12", "728参数.Hex")
     assert metadata["tool"] == "v12"
@@ -189,6 +242,7 @@ if __name__ == "__main__":
     test_v12_line_checksum()
     test_v14_invalid_intel_hex_checksum_opens_and_exports()
     test_v14_invalid_srecord_checksum_opens_and_exports()
+    test_v14_original_suffix_preserves_record_format()
     test_v12_two_segment_save_copies_first_segment_on_export()
     test_v55_compare_edit_and_refresh()
     test_v55_recalculate_syncs_mirror_before_checksum()
